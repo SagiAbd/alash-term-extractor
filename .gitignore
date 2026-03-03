@@ -1,0 +1,20 @@
+# Secrets
+.env
+
+# Generated data (large / re-creatable)
+output/
+ocr_results.json
+terms.xlsx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
