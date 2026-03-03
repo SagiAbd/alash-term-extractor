@@ -18,9 +18,23 @@ A three-step pipeline for extracting scientific terminology from historical Kaza
 
 ## Setup
 
+### 1. Create and activate a virtual environment
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate   # macOS / Linux
+# .venv\Scripts\activate    # Windows
+```
+
+### 2. Install dependencies
+
 ```bash
 pip install -r requirements.txt
+```
 
+### 3. Configure environment variables
+
+```bash
 cp .env.example .env
 # edit .env and add your Gemini API key
 ```
