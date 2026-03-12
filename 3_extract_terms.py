@@ -119,15 +119,11 @@ def create_extraction_prompt(text: str, prev_tail: str = "", next_head: str = ""
 Мәтін (терминдерді тек НЕГІЗГІ МӘТІННЕН алыңыз):
 {context_block}
 
-### ТАҢДАУ КРИТЕРИЙІ — екі шарттың бірі орындалуы тиіс:
+### ТАҢДАУ КРИТЕРИЙІ
 
-**1. КӨНЕРГЕН СӨЗ (көнерген сөз / архаизм)** — бүгінгі күнде күнделікті қолданыстан шыққан сөз немесе сөз тіркесі. Қазіргі қазақ тілінде баламасы басқаша айтылады немесе мүлдем ұмытылған.
-Мысал: "ұстаз" (қазір: мұғалім), "дәріс" (қазір: сабақ), "зерде" (қазір: ес/зерде), "шәкірт" (қазір: оқушы).
+Мәтіннен **ХХ ғасыр басындағы қазақ тілінде ғылым мен білімнің бар болғанын дәлелдейтін** сөздер мен сөз тіркестерін алыңыз. Бұл — физика, химия, биология, медицина, заң, экономика, философия, педагогика, техника және т.б. салалардың кәсіби немесе ғылыми лексикасы.
 
-**2. ҒЫЛЫМИ/КӘСІБИ ТЕРМИН** — белгілі бір пән аясында арнайы мағынасы бар сөз: физика, химия, биология, медицина, заң, экономика, философия, педагогика және т.б.
-Мысал: "айналым капиталы", "заңды тұлға", "тепе-теңдік", "тамыр жүйесі".
-
-**Идеал жағдай**: екі шарт бірден орындалса (көнерген ғылыми термин) — міндетті түрде алыңыз.
+**Термин мүмкіндігінше қысқа болуы тиіс** — бір сөз немесе нақты мағынасы бар ең қысқа тіркес. Егер жеке сөз жеткілікті болса, ұзын тіркес алмаңыз.
 
 ### АЛМАҢЫЗ:
 - Бүгінгі күнде де жиі қолданылатын қарапайым сөздер: "мұғалім", "кітап", "адам", "үй", "бару"
@@ -143,7 +139,7 @@ def create_extraction_prompt(text: str, prev_tail: str = "", next_head: str = ""
 {{
   "terms": [
     {{
-      "alash_term": "мәтіндегі дәл түрі (өзгертпе)",
+      "alash_term": "терминнің негізгі түрі: септік/көптік/тәуелдік жалғауларын алып тастап, атау тұлғасында жаз. Мәтіндегі емлені сақта, мағынасын өзгертпе. Мысал: 'заң қызметіне' → 'заң қызметі', 'тергеу орындарының' → 'тергеу орындары'.",
       "modern_term": "қазіргі қазақ тіліндегі баламасы",
       "field": "ғылым саласы",
       "subfield": "нақты бөлімі",
@@ -372,6 +368,24 @@ def _save_with_metadata_header(df: pd.DataFrame, output_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# Deduplication
+# ---------------------------------------------------------------------------
+
+def deduplicate_terms(terms: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Remove duplicate entries by alash_term (case-insensitive). Keeps the
+    first occurrence (lowest page number, since the list is pre-sorted)."""
+    seen: set = set()
+    result = []
+    for t in terms:
+        key = t.get("Алаш термині", "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(t)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -492,6 +506,7 @@ def main():
 
     state_lock = threading.Lock()
     processed_count = 0
+    dupes = 0
 
     def process_page(src_idx: int):
         page = ocr_data[src_idx]
@@ -510,6 +525,9 @@ def main():
             with state_lock:
                 all_terms.extend(terms)
                 all_terms.sort(key=lambda t: t.get("Басталатын беті", -1))
+                before_dedup = len(all_terms)
+                all_terms = deduplicate_terms(all_terms)
+                dupes = before_dedup - len(all_terms)
                 if page_num >= 0:
                     processed_pages.add(page_num)
                 save_state(state_file, all_terms, processed_pages)
@@ -521,7 +539,10 @@ def main():
     if processed_count == 0:
         log.info("No new pages to process.")
     else:
-        log.info("Done. Processed %d new page(s). Total terms: %d.", processed_count, len(all_terms))
+        log.info(
+            "Done. Processed %d new page(s). Unique terms: %d. Duplicates removed: %d.",
+            processed_count, len(all_terms), dupes,
+        )
 
 
 if __name__ == "__main__":
