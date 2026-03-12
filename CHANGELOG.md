@@ -2,6 +2,14 @@
 
 All notable updates in this repository.
 
+## 2026-03-13
+
+### Changed
+
+- `3_extract_terms.py`: removed `subfield` and `significance` output fields to reduce token usage.
+- `3_extract_terms.py`: context field reduced to 1 sentence in description.
+- `config.py`: `TERMS_OVERLAP_CHARS` reduced from 300 → 150 to halve adjacent-page context tokens.
+
 ## 2026-03-12 (4)
 
 ### Changed
