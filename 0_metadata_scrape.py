@@ -165,6 +165,34 @@ def open_viewer(url: str, headless: bool) -> webdriver.Chrome:
 # Gemini extraction
 # ---------------------------------------------------------------------------
 
+def load_dotenv(env_path: Path = Path(".env")) -> None:
+    """Load KEY=VALUE pairs from .env into process env without overwriting existing vars."""
+    if not env_path.exists():
+        return
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].strip()
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key:
+                continue
+            if (
+                (value.startswith('"') and value.endswith('"'))
+                or (value.startswith("'") and value.endswith("'"))
+            ):
+                value = value[1:-1]
+            os.environ.setdefault(key, value)
+    except OSError as exc:
+        log.warning("Could not read %s: %s", env_path, exc)
+
+
 def configure_genai(api_key: str | None = None):
     key = api_key or os.getenv("GEMINI_API_KEY")
     if not key:
@@ -399,6 +427,7 @@ def main():
         help="Print extracted metadata but do NOT write to config.py",
     )
     args = parser.parse_args()
+    load_dotenv()
 
     try:
         configure_genai(args.api_key)
