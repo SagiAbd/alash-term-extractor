@@ -46,10 +46,10 @@ OCR_MODEL_NAME = "gemini-2.5-flash"
 # ---------------------------------------------------------------------------
 # 3_extract_terms.py — Term extraction
 # ---------------------------------------------------------------------------
-TERMS_OVERLAP_CHARS = 300            # characters from adjacent pages included as context
+TERMS_OVERLAP_CHARS = 150            # characters from adjacent pages included as context
 TERMS_MODEL_NAME = "gemini-2.5-flash"
 TERMS_FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash"]
-PARALLEL_REQUESTS = 100             # concurrent API requests (OCR and term extraction)
+PARALLEL_REQUESTS = 50             # concurrent API requests (OCR and term extraction)
 
 # Metadata written into every extracted term row (sourced from .metadata.json)
 CONST_YEAR   = _meta.get("year")   or 2013
