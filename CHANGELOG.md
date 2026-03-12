@@ -2,6 +2,23 @@
 
 All notable updates in this repository.
 
+## 2026-03-12 (4)
+
+### Changed
+
+- `3_extract_terms.py`: rewrote extraction prompt — goal now explicitly framed as proving early 20th-century Kazakh scientific vocabulary; criteria tightened to scientific/professional lexicon; "if in doubt, skip" rule; common words and administrative terms excluded by example; terms normalised to base form (case suffixes stripped); terms kept as short as possible.
+- `3_extract_terms.py`: `is_definition` now requires an explicit explanatory sentence ("X — бұл Y"); mere usage no longer qualifies.
+- `3_extract_terms.py`: added fallback model chain (`gemini-2.0-flash` → `gemini-1.5-flash`) — blocked responses immediately try the next model instead of failing.
+- `config.py`: added `TERMS_FALLBACK_MODELS` list.
+
+### Fixed
+
+- `3_extract_terms.py`: `response.text` access now wrapped in `ValueError` catch so blocked API responses no longer crash the process.
+
+### Added
+
+- `3_extract_terms.py`: deduplication by `Алаш термині` (case-insensitive) runs after every page; duplicate count reported in final summary log line.
+
 ## 2026-03-12 (3)
 
 ### Changed
