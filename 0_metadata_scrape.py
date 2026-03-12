@@ -66,7 +66,14 @@ and used in every term exported from the book.
 FIELDS TO EXTRACT:
 1. title       — Full title of the book exactly as it appears on the page \
 (in the original language, usually Kazakh or Russian). Do NOT translate. \
-Strip leading/trailing whitespace.
+Strip leading/trailing whitespace. \
+IMPORTANT: if the book is part of a series or multi-volume set, include the \
+volume designation as printed — e.g. "Шығармалары. 1-том", "Алты томдық \
+шығармалар жинағы. 2-том", "Собрание сочинений. Том 3". \
+Look for volume markers in these forms: "N-том", "Том N", "N том", \
+"Т. N", "Кітап N", "Volume N", "Part N", "Бөлім N" — if any appear \
+near the title (on the cover, title page, or header), append them to the \
+title string separated by ". ".
 2. author      — Full name(s) of the author(s) as printed. If multiple \
 authors, join with "; ". If no author is found return an empty string "".
 3. year        — Publication year as a 4-digit integer (e.g. 2013). \
@@ -238,78 +245,26 @@ def extract_metadata_with_ai(page_source: str, screenshot_png: bytes) -> dict:
 # config.py writer
 # ---------------------------------------------------------------------------
 
-CONFIG_PATH = Path(__file__).parent / "config.py"
-
-# Each key maps to the config.py variable name it should update
-FIELD_TO_CONFIG_VAR = {
-    "title":       None,          # not currently a config var, we'll add it
-    "author":      "CONST_AUTHOR",
-    "year":        "CONST_YEAR",
-    "total_pages": None,          # informational only (logged)
-    "link":        ("CONST_LINK", "SCRAPER_DEFAULT_URL"),
-}
+METADATA_JSON_PATH = Path(__file__).parent / ".metadata.json"
 
 
-def _quote(value) -> str:
-    if isinstance(value, str):
-        return f'"{value}"'
-    return str(value)
-
-
-def _update_config_var(source: str, var_name: str, new_value) -> str:
-    """Replace the first assignment of `var_name = ...` in config.py source."""
-    pattern = re.compile(
-        rf'^({re.escape(var_name)}\s*=\s*).*$',
-        re.MULTILINE,
-    )
-    replacement = rf'\g<1>{_quote(new_value)}'
-    new_source, count = pattern.subn(replacement, source, count=1)
-    if count == 0:
-        log.warning("Variable %s not found in config.py — skipping.", var_name)
-    return new_source
-
-
-def _ensure_title_var(source: str, title: str) -> str:
-    """Add CONST_TITLE if absent, otherwise update it."""
-    if re.search(r'^CONST_TITLE\s*=', source, re.MULTILINE):
-        return _update_config_var(source, "CONST_TITLE", title)
-    # Insert after CONST_AUTHOR line
-    insertion = f'\nCONST_TITLE = "{title}"'
-    source = re.sub(r'(^CONST_AUTHOR\s*=.*$)', r'\1' + insertion, source, count=1, flags=re.MULTILINE)
-    return source
-
-
-def write_metadata_to_config(metadata: dict):
-    source = CONFIG_PATH.read_text(encoding="utf-8")
-    original = source
-
+def write_metadata_to_json(metadata: dict):
     author = metadata.get("author") or ""
     year = metadata.get("year")
-    link = metadata.get("link") or ""
+    link = (metadata.get("link") or "").rstrip("#")
     title = metadata.get("title") or ""
     total_pages = metadata.get("total_pages")
 
-    if author:
-        source = _update_config_var(source, "CONST_AUTHOR", author)
+    payload = {
+        "author":      author,
+        "title":       title,
+        "year":        year,
+        "link":        link,
+        "total_pages": total_pages,
+    }
+    METADATA_JSON_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    log.info("Metadata written to %s", METADATA_JSON_PATH)
 
-    if year is not None:
-        source = _update_config_var(source, "CONST_YEAR", year)
-
-    if link:
-        # CONST_LINK gets a trailing # for page anchoring; SCRAPER_DEFAULT_URL is clean
-        source = _update_config_var(source, "CONST_LINK", link.rstrip("#") + "#")
-        source = _update_config_var(source, "SCRAPER_DEFAULT_URL", link.rstrip("#"))
-
-    if title:
-        source = _ensure_title_var(source, title)
-
-    if source != original:
-        CONFIG_PATH.write_text(source, encoding="utf-8")
-        log.info("config.py updated successfully.")
-    else:
-        log.info("config.py unchanged (no new values detected).")
-
-    # Always log a summary
     log.info("─── Extracted metadata ───────────────────────────")
     log.info("  Title       : %s", title or "(not found)")
     log.info("  Author      : %s", author or "(not found)")
@@ -442,11 +397,11 @@ def main():
     )
 
     if args.dry_run:
-        log.info("Dry-run mode — not writing to config.py")
+        log.info("Dry-run mode — not writing to .metadata.json")
         print(json.dumps(metadata, ensure_ascii=False, indent=2))
         return
 
-    write_metadata_to_config(metadata)
+    write_metadata_to_json(metadata)
 
 
 if __name__ == "__main__":

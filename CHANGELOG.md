@@ -2,6 +2,15 @@
 
 All notable updates in this repository.
 
+## 2026-03-12 (3)
+
+### Changed
+
+- `0_metadata_scrape.py`: writes extracted metadata to `.metadata.json` (gitignored) instead of patching `config.py` source — removes fragile regex rewriting.
+- `config.py`: loads `.metadata.json` at import time; hardcoded values serve as fallbacks when the file is absent.
+- `0_metadata_scrape.py`: improved title-extraction prompt to include volume designations ("1-том", "Том 3", "Кітап N", etc.) appended to the title string.
+- `.gitignore`: added `.metadata.json`.
+
 ## 2026-03-12 (2)
 
 ### Added
