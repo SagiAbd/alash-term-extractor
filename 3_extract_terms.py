@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
 Script to extract scientific terms from OCR results using Gemini API.
-Reads ocr_results.json and outputs terms.xlsx.
+Reads ocr/<book_id>.json and outputs terms/<book_id>.xlsx.
+
+Supports incremental saves: the xlsx is updated after every LLM call so you
+can stop at any time and resume where you left off.
 """
 
 import json
@@ -17,13 +20,13 @@ from openpyxl.styles import Font, PatternFill, Alignment
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from config import (
-    TERMS_INPUT_FILE as INPUT_FILE,
-    TERMS_OUTPUT_FILE as OUTPUT_FILE,
+    OUTPUT_BASE_DIR,
     TERMS_OVERLAP_CHARS as OVERLAP_CHARS,
     TERMS_MODEL_NAME as MODEL_NAME,
     CONST_YEAR,
     CONST_LINK,
     CONST_AUTHOR,
+    book_dir_name,
 )
 try:
     from config import CONST_TITLE
@@ -37,7 +40,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger(__name__)
-
 
 
 def load_dotenv(env_path: Path = Path(".env")) -> None:
@@ -76,18 +78,6 @@ def configure_genai(api_key: str | None = None):
     genai.configure(api_key=key)
 
 
-def output_file_has_content(output_file: Path) -> bool:
-    """Return True if output file exists and is non-empty."""
-    if not output_file.exists():
-        return False
-    try:
-        return output_file.stat().st_size > 0
-    except OSError as exc:
-        log.warning("Could not inspect %s: %s", output_file, exc)
-        # Fail closed to avoid accidental overwrite of existing data.
-        return True
-
-
 def parse_page_num(page_data: Dict[str, Any]) -> int:
     """Parse page number from OCR entry; returns -1 if missing/invalid."""
     page_raw = page_data.get("page", -1)
@@ -101,7 +91,7 @@ def load_ocr_results(filepath: Path) -> List[Dict[str, Any]]:
     if not filepath.exists():
         log.error("Input file not found: %s", filepath)
         return []
-    
+
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -280,141 +270,75 @@ def deduplicate_terms(terms: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         log.info("Deduplication: removed %d duplicate term(s), %d unique term(s) remain.", removed, len(result))
     return result
 
-def main():
-    parser = argparse.ArgumentParser(description="Extract terms from OCR results to Excel")
-    parser.add_argument("--limit", type=int, help="Limit number of pages to process (for testing, index-based mode)")
-    parser.add_argument("--start", type=int, default=0, help="Start page index (0-based, index-based mode)")
-    parser.add_argument("--start-page", "-s", type=int, default=None, help="Start page number (inclusive)")
-    parser.add_argument("--end-page", "-e", type=int, default=None, help="End page number (inclusive)")
-    parser.add_argument("--api-key", type=str, default=None, help="Gemini API key (overrides GEMINI_API_KEY env var)")
-    args = parser.parse_args()
 
-    load_dotenv()
+# ---------------------------------------------------------------------------
+# Incremental state (resume support)
+# ---------------------------------------------------------------------------
 
-    if args.start < 0:
-        parser.error("--start must be >= 0")
-    if args.limit is not None and args.limit < 1:
-        parser.error("--limit must be >= 1")
-    if args.start_page is not None and args.start_page < 1:
-        parser.error("--start-page must be >= 1")
-    if args.end_page is not None and args.end_page < 1:
-        parser.error("--end-page must be >= 1")
-    if (
-        args.start_page is not None
-        and args.end_page is not None
-        and args.start_page > args.end_page
-    ):
-        parser.error("--start-page cannot be greater than --end-page")
-    if (
-        (args.start_page is not None or args.end_page is not None)
-        and (args.start != 0 or args.limit is not None)
-    ):
-        parser.error("Use either --start/--limit (index mode) or --start-page/--end-page (page mode), not both")
-    if output_file_has_content(Path(OUTPUT_FILE)):
-        log.error(
-            "Output file is not empty: %s\n"
-            "Stop to prevent overriding/mixing old files. Please back up or clear this file, then rerun.",
-            Path(OUTPUT_FILE).resolve(),
-        )
-        return
-
-    configure_genai(args.api_key)
-    model = genai.GenerativeModel(MODEL_NAME)
-    
-    ocr_data = load_ocr_results(Path(INPUT_FILE))
-    if not ocr_data:
-        log.error("No OCR data loaded.")
-        return
-
-    selected_indices: List[int] = []
-    if args.start_page is not None or args.end_page is not None:
-        skipped_invalid = 0
-        for i, page_data in enumerate(ocr_data):
-            page_num = parse_page_num(page_data)
-            if page_num < 1:
-                skipped_invalid += 1
-                continue
-            if args.start_page is not None and page_num < args.start_page:
-                continue
-            if args.end_page is not None and page_num > args.end_page:
-                continue
-            selected_indices.append(i)
-        if skipped_invalid:
-            log.warning("Skipped %d OCR record(s) with invalid page numbers.", skipped_invalid)
-        if not selected_indices:
-            log.warning(
-                "No OCR records matched page range %s-%s.",
-                args.start_page if args.start_page is not None else "*",
-                args.end_page if args.end_page is not None else "*",
-            )
-            return
+def load_state(state_file: Path) -> tuple[list, set]:
+    """Load raw terms and processed page numbers from the state file."""
+    if not state_file.exists():
+        return [], set()
+    try:
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+        terms = data.get("terms", [])
+        processed = set(data.get("processed_pages", []))
         log.info(
-            "Processing %d OCR record(s) in page range %s-%s.",
-            len(selected_indices),
-            args.start_page if args.start_page is not None else "*",
-            args.end_page if args.end_page is not None else "*",
+            "Resuming: %d terms already extracted from %d page(s).",
+            len(terms), len(processed),
         )
-    else:
-        start_idx = args.start
-        end_idx = start_idx + args.limit if args.limit else len(ocr_data)
-        if start_idx >= len(ocr_data):
-            log.warning(
-                "Start index %d is out of range for OCR dataset of size %d.",
-                start_idx,
-                len(ocr_data),
-            )
-            return
-        end_idx = min(end_idx, len(ocr_data))
-        selected_indices = list(range(start_idx, end_idx))
-        log.info("Processing OCR indices %d to %d.", start_idx, end_idx - 1)
+        return terms, processed
+    except Exception as e:
+        log.warning("Could not load state file %s: %s", state_file, e)
+        return [], set()
 
-    all_terms = []
 
-    for processed_count, src_idx in enumerate(selected_indices, start=1):
-        page = ocr_data[src_idx]
-        prev_text = ocr_data[src_idx - 1].get("text", "") if src_idx > 0 else ""
-        next_text = ocr_data[src_idx + 1].get("text", "") if src_idx < len(ocr_data) - 1 else ""
-        terms = extract_terms_from_page(page, model, prev_text=prev_text, next_text=next_text)
-        all_terms.extend(terms)
-        # Sleep to avoid hitting rate limits too hard
-        time.sleep(2)
-        if processed_count % 10 == 0:
-            log.info("Processed %d page(s)...", processed_count)
+def save_state(state_file: Path, terms: list, processed_pages: set):
+    """Persist raw terms and processed page set to JSON."""
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(
+        json.dumps(
+            {"terms": terms, "processed_pages": sorted(processed_pages)},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
-    all_terms = deduplicate_terms(all_terms)
 
-    if not all_terms:
-        log.warning("No terms extracted.")
+# ---------------------------------------------------------------------------
+# Excel writer
+# ---------------------------------------------------------------------------
+
+COLUMNS = [
+    "Заманауи термин", "Алаш термині", "Сала", "Кіші сала(subfield)",
+    "Заманауи түсініктеме", "Алаш түсініктемесі", "Анықтама бар ма",
+    "Екі бет арасындағы мәтін -- контекст үшін", "Авторы",
+    "Басталатын беті", "Аяқталу беті", "Жазылу жылы", "Сілтеме",
+    "Ғылыми дискурсқа маңызы"
+]
+
+
+def save_xlsx(terms: List[Dict[str, Any]], output_path: Path):
+    """Deduplicate *terms* and write them to an Excel file with a metadata header block."""
+    deduped = deduplicate_terms(terms)
+    if not deduped:
         return
 
-    # Create DataFrame
-    df = pd.DataFrame(all_terms)
-
-    # Ensure column order
-    columns = [
-        "Заманауи термин", "Алаш термині", "Сала", "Кіші сала(subfield)",
-        "Заманауи түсініктеме", "Алаш түсініктемесі", "Анықтама бар ма",
-        "Екі бет арасындағы мәтін -- контекст үшін", "Авторы",
-        "Басталатын беті", "Аяқталу беті", "Жазылу жылы", "Сілтеме",
-        "Ғылыми дискурсқа маңызы"
-    ]
-    for col in columns:
+    df = pd.DataFrame(deduped)
+    for col in COLUMNS:
         if col not in df.columns:
             df[col] = ""
-    df = df[columns]
+    df = df[COLUMNS]
 
-    # Save to Excel with metadata header block
-    try:
-        _save_with_metadata_header(df, OUTPUT_FILE)
-        log.info("Successfully saved %d terms to %s", len(df), OUTPUT_FILE)
-    except Exception as e:
-        log.error("Failed to save Excel file: %s", e)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _save_with_metadata_header(df, output_path)
+    log.info("Saved %d terms to %s", len(df), output_path)
 
 
-def _save_with_metadata_header(df: pd.DataFrame, output_path: str):
+def _save_with_metadata_header(df: pd.DataFrame, output_path: Path):
     """
     Write *df* to an Excel file, preceded by a styled metadata block.
-    Metadata rows are bold, font size 24. Labels are in Kazakh.
 
     Layout:
       Row 1  : Кітап атауы  | <title>
@@ -460,7 +384,140 @@ def _save_with_metadata_header(df: pd.DataFrame, output_path: str):
         for c_idx, value in enumerate(row, start=1):
             ws.cell(row=r_idx, column=c_idx, value=value)
 
-    wb.save(output_path)
+    wb.save(str(output_path))
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description="Extract terms from OCR results to Excel")
+    parser.add_argument("--limit", type=int, help="Limit number of pages to process (for testing, index-based mode)")
+    parser.add_argument("--start", type=int, default=0, help="Start page index (0-based, index-based mode)")
+    parser.add_argument("--start-page", "-s", type=int, default=None, help="Start page number (inclusive)")
+    parser.add_argument("--end-page", "-e", type=int, default=None, help="End page number (inclusive)")
+    parser.add_argument("--api-key", type=str, default=None, help="Gemini API key (overrides GEMINI_API_KEY env var)")
+    args = parser.parse_args()
+
+    load_dotenv()
+
+    # --- Derive file paths from author + title (set by 0_metadata_scrape.py) ---
+    book_dir   = Path(OUTPUT_BASE_DIR) / book_dir_name()
+    input_file  = book_dir / "ocr.json"
+    output_xlsx = book_dir / "terms.xlsx"
+    state_file  = book_dir / "terms_state.json"
+
+    log.info("Book dir  : %s", book_dir)
+    log.info("OCR input : %s", input_file)
+    log.info("Excel out : %s", output_xlsx)
+
+    # --- Argument validation ---
+    if args.start < 0:
+        parser.error("--start must be >= 0")
+    if args.limit is not None and args.limit < 1:
+        parser.error("--limit must be >= 1")
+    if args.start_page is not None and args.start_page < 1:
+        parser.error("--start-page must be >= 1")
+    if args.end_page is not None and args.end_page < 1:
+        parser.error("--end-page must be >= 1")
+    if (
+        args.start_page is not None
+        and args.end_page is not None
+        and args.start_page > args.end_page
+    ):
+        parser.error("--start-page cannot be greater than --end-page")
+    if (
+        (args.start_page is not None or args.end_page is not None)
+        and (args.start != 0 or args.limit is not None)
+    ):
+        parser.error("Use either --start/--limit (index mode) or --start-page/--end-page (page mode), not both")
+
+    configure_genai(args.api_key)
+    model = genai.GenerativeModel(MODEL_NAME)
+
+    ocr_data = load_ocr_results(input_file)
+    if not ocr_data:
+        log.error("No OCR data loaded.")
+        return
+
+    # --- Build index of pages to process ---
+    selected_indices: List[int] = []
+    if args.start_page is not None or args.end_page is not None:
+        skipped_invalid = 0
+        for i, page_data in enumerate(ocr_data):
+            page_num = parse_page_num(page_data)
+            if page_num < 1:
+                skipped_invalid += 1
+                continue
+            if args.start_page is not None and page_num < args.start_page:
+                continue
+            if args.end_page is not None and page_num > args.end_page:
+                continue
+            selected_indices.append(i)
+        if skipped_invalid:
+            log.warning("Skipped %d OCR record(s) with invalid page numbers.", skipped_invalid)
+        if not selected_indices:
+            log.warning(
+                "No OCR records matched page range %s-%s.",
+                args.start_page if args.start_page is not None else "*",
+                args.end_page if args.end_page is not None else "*",
+            )
+            return
+        log.info(
+            "Processing %d OCR record(s) in page range %s-%s.",
+            len(selected_indices),
+            args.start_page if args.start_page is not None else "*",
+            args.end_page if args.end_page is not None else "*",
+        )
+    else:
+        start_idx = args.start
+        end_idx = start_idx + args.limit if args.limit else len(ocr_data)
+        if start_idx >= len(ocr_data):
+            log.warning(
+                "Start index %d is out of range for OCR dataset of size %d.",
+                start_idx,
+                len(ocr_data),
+            )
+            return
+        end_idx = min(end_idx, len(ocr_data))
+        selected_indices = list(range(start_idx, end_idx))
+        log.info("Processing OCR indices %d to %d.", start_idx, end_idx - 1)
+
+    # --- Load existing state for resume ---
+    all_terms, processed_pages = load_state(state_file)
+
+    # --- Main extraction loop ---
+    processed_count = 0
+    for src_idx in selected_indices:
+        page = ocr_data[src_idx]
+        page_num = parse_page_num(page)
+
+        if page_num in processed_pages:
+            log.info("Page %d: already processed, skipping.", page_num)
+            continue
+
+        prev_text = ocr_data[src_idx - 1].get("text", "") if src_idx > 0 else ""
+        next_text = ocr_data[src_idx + 1].get("text", "") if src_idx < len(ocr_data) - 1 else ""
+        terms = extract_terms_from_page(page, model, prev_text=prev_text, next_text=next_text)
+
+        all_terms.extend(terms)
+        if page_num >= 0:
+            processed_pages.add(page_num)
+
+        # Save after every LLM call so you can stop and resume at any point
+        save_state(state_file, all_terms, processed_pages)
+        save_xlsx(all_terms, output_xlsx)
+
+        processed_count += 1
+        time.sleep(2)
+        if processed_count % 10 == 0:
+            log.info("Processed %d new page(s)...", processed_count)
+
+    if processed_count == 0:
+        log.info("No new pages to process.")
+    else:
+        log.info("Done. Processed %d new page(s). Total terms: %d.", processed_count, len(all_terms))
 
 
 if __name__ == "__main__":

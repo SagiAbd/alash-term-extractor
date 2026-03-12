@@ -21,10 +21,11 @@ from urllib.parse import urlparse, parse_qs
 
 from config import (
     SCRAPER_DEFAULT_URL as DEFAULT_URL,
-    SCRAPER_DEFAULT_OUTPUT_DIR as DEFAULT_OUTPUT_DIR,
+    OUTPUT_BASE_DIR,
     SCRAPER_PAGE_LOAD_TIMEOUT as PAGE_LOAD_TIMEOUT,
     SCRAPER_IMAGE_CHANGE_TIMEOUT as IMAGE_CHANGE_TIMEOUT,
     SCRAPER_MAX_RETRIES as MAX_RETRIES,
+    book_dir_name,
 )
 
 import requests
@@ -331,8 +332,8 @@ def main():
     )
     parser.add_argument(
         "--output-dir", "-o",
-        default=DEFAULT_OUTPUT_DIR,
-        help="Output directory for images (default: %(default)s)",
+        default=None,
+        help=f"Output directory for images (default: {OUTPUT_BASE_DIR}/<author>__<title>)",
     )
     parser.add_argument(
         "--start-page", "-s",
@@ -359,9 +360,12 @@ def main():
     )
 
     args = parser.parse_args()
+    output_dir = args.output_dir or str(
+        Path(OUTPUT_BASE_DIR) / book_dir_name() / "images"
+    )
     scrape_pages(
         url=args.url,
-        output_dir=args.output_dir,
+        output_dir=output_dir,
         start_page=args.start_page,
         end_page=args.end_page,
         headless=not args.no_headless,

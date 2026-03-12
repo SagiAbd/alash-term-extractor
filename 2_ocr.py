@@ -18,9 +18,9 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 from config import (
-    OCR_DEFAULT_INPUT_DIR as DEFAULT_INPUT_DIR,
-    OCR_DEFAULT_OUTPUT_FILE as DEFAULT_OUTPUT_FILE,
+    OUTPUT_BASE_DIR,
     OCR_MODEL_NAME as MODEL_NAME,
+    book_dir_name,
 )
 
 import google.generativeai as genai
@@ -174,15 +174,15 @@ def main():
     parser = argparse.ArgumentParser(description="OCR images using Gemini API")
     parser.add_argument(
         "--input-dir", "-i",
-        default=DEFAULT_INPUT_DIR,
+        default=None,
         type=Path,
-        help=f"Directory containing images (default: {DEFAULT_INPUT_DIR})",
+        help=f"Directory containing images (default: {OUTPUT_BASE_DIR}/<author>__<title>)",
     )
     parser.add_argument(
         "--output-file", "-o",
-        default=DEFAULT_OUTPUT_FILE,
+        default=None,
         type=Path,
-        help=f"Output JSON file (default: {DEFAULT_OUTPUT_FILE})",
+        help=f"Output JSON file (default: {OUTPUT_BASE_DIR}/<author>__<title>/ocr.json)",
     )
     parser.add_argument(
         "--api-key", "-k",
@@ -202,6 +202,11 @@ def main():
     )
     
     args = parser.parse_args()
+    book_dir = Path(OUTPUT_BASE_DIR) / book_dir_name()
+    if args.input_dir is None:
+        args.input_dir = book_dir / "images"
+    if args.output_file is None:
+        args.output_file = book_dir / "ocr.json"
     load_dotenv()
 
     if args.start_page is not None and args.start_page < 1:
@@ -273,6 +278,7 @@ def main():
         results.append(result_entry)
         
         # Save incrementally
+        args.output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(args.output_file, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
             
