@@ -9,19 +9,23 @@ Usage:
 """
 
 import argparse
-import base64
 import json
 import logging
 import time
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Dict, Any
 
 from config import (
     OUTPUT_BASE_DIR,
     OCR_MODEL_NAME as MODEL_NAME,
+    PARALLEL_REQUESTS,
     book_dir_name,
 )
+
+OCR_FALLBACK_MODEL_NAME = "gemini-2.0-flash"
 
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
@@ -133,43 +137,62 @@ def load_existing_results(output_file: Path) -> List[Dict[str, Any]]:
         return []
 
 
-def perform_ocr(image_path: Path, model) -> str:
-    """Send image to Gemini API for OCR."""
+SAFETY_SETTINGS = {
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+}
+
+PROMPT = (
+    "Transcribe the text in this image exactly as is. "
+    "Preserve the layout, spacing, and line breaks to the best of your ability. "
+    "Do not add any introductory or concluding remarks. "
+    "If there are tables, try to preserve their structure."
+)
+
+
+def _call_model(image_path: Path, model) -> str:
+    """Call model once and return text. Raises on any error."""
+    image_data = {"mime_type": "image/png", "data": image_path.read_bytes()}
+    response = model.generate_content([PROMPT, image_data], safety_settings=SAFETY_SETTINGS)
+    return response.text
+
+
+def perform_ocr(image_path: Path, primary_model, fallback_model) -> str:
+    """Send image to Gemini API for OCR with retries and fallback model."""
     log.info("Processing %s...", image_path.name)
-    
-    try:
-        # Load image data
-        image_data = {
-            "mime_type": "image/png",
-            "data": image_path.read_bytes()
-        }
 
-        prompt = (
-            "Transcribe the text in this image exactly as is. "
-            "Preserve the layout, spacing, and line breaks to the best of your ability. "
-            "Do not add any introductory or concluding remarks. "
-            "If there are tables, try to preserve their structure."
-        )
+    def try_with_model(model, model_name: str, attempts: int) -> str | None:
+        for attempt in range(1, attempts + 1):
+            try:
+                return _call_model(image_path, model)
+            except Exception as e:
+                err = str(e)
+                log.error(
+                    "Error processing %s with %s (attempt %d/%d): %s",
+                    image_path.name, model_name, attempt, attempts, e,
+                )
+                if attempt < attempts:
+                    if "429" in err:
+                        wait = 60 * attempt
+                        log.warning("Rate limit hit, waiting %ds...", wait)
+                        time.sleep(wait)
+                    else:
+                        time.sleep(5)
+        return None
 
-        response = model.generate_content(
-            [prompt, image_data],
-            safety_settings={
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
-        )
-        
-        return response.text
-    except Exception as e:
-        log.error("Error processing %s: %s", image_path.name, e)
-        # basic rate limit handling
-        if "429" in str(e):
-            log.warning("Rate limit hit, waiting 60s...")
-            time.sleep(60)
-            return perform_ocr(image_path, model) # Retry once
-        return ""
+    result = try_with_model(primary_model, MODEL_NAME, attempts=2)
+    if result is not None:
+        return result
+
+    log.warning("Primary model failed for %s, trying fallback model %s...", image_path.name, OCR_FALLBACK_MODEL_NAME)
+    result = try_with_model(fallback_model, OCR_FALLBACK_MODEL_NAME, attempts=1)
+    if result is not None:
+        return result
+
+    log.error("All attempts failed for %s, skipping.", image_path.name)
+    return ""
 
 
 def main():
@@ -229,6 +252,7 @@ def main():
         return
 
     model = genai.GenerativeModel(MODEL_NAME)
+    fallback_model = genai.GenerativeModel(OCR_FALLBACK_MODEL_NAME)
 
     images = get_sorted_images(args.input_dir)
     if not images:
@@ -266,26 +290,26 @@ def main():
     else:
         log.info("Found %d images to process", len(images))
 
-    for i, img_path in enumerate(images):
-        text = perform_ocr(img_path, model)
-        
-        page_num = parse_page_num(img_path)
+    save_lock = threading.Lock()
+    args.output_file.parent.mkdir(parents=True, exist_ok=True)
 
-        result_entry = {
-            "page": page_num,
-            "file": img_path.name,
-            "text": text
-        }
-        results.append(result_entry)
-        
-        # Save incrementally
-        args.output_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(args.output_file, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=2, ensure_ascii=False)
-            
-        # Respect rate limits (15 RPM for free tier, but safe side)
-        time.sleep(4) 
-    
+    def process_image(img_path: Path):
+        text = perform_ocr(img_path, model, fallback_model)
+        if not text:
+            log.warning("Skipping %s — no text extracted.", img_path.name)
+            return
+        entry = {"page": parse_page_num(img_path), "file": img_path.name, "text": text}
+        with save_lock:
+            results.append(entry)
+            results.sort(key=lambda e: e["page"])
+            with open(args.output_file, "w", encoding="utf-8") as f:
+                json.dump(results, f, indent=2, ensure_ascii=False)
+
+    with ThreadPoolExecutor(max_workers=PARALLEL_REQUESTS) as executor:
+        futures = [executor.submit(process_image, img) for img in images]
+        for future in as_completed(futures):
+            future.result()  # re-raise any unexpected exception
+
     log.info("OCR complete. Results saved to %s", args.output_file)
 
 

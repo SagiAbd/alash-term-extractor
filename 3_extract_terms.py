@@ -12,6 +12,8 @@ import logging
 import os
 import time
 import argparse
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import pandas as pd
@@ -23,6 +25,7 @@ from config import (
     OUTPUT_BASE_DIR,
     TERMS_OVERLAP_CHARS as OVERLAP_CHARS,
     TERMS_MODEL_NAME as MODEL_NAME,
+    PARALLEL_REQUESTS,
     CONST_YEAR,
     CONST_LINK,
     CONST_AUTHOR,
@@ -189,86 +192,83 @@ def extract_terms_from_page(
     model,
     prev_text: str = "",
     next_text: str = "",
-) -> List[Dict[str, Any]]:
-    """Extract terms from a single page using Gemini API."""
+) -> Optional[List[Dict[str, Any]]]:
+    """Extract terms from a single page using Gemini API.
+
+    Returns None if the page was skipped without calling the API (e.g. empty
+    text), so the caller can avoid marking it as processed.  Returns a list
+    (possibly empty) when the API was actually called.
+    """
     page_num = page_data.get("page", -1)
     text = page_data.get("text", "")
 
     if not text.strip():
         log.warning("Page %d has no text, skipping.", page_num)
-        return []
+        return None
 
     prev_tail = prev_text[-OVERLAP_CHARS:] if prev_text else ""
     next_head = next_text[:OVERLAP_CHARS] if next_text else ""
     prompt = create_extraction_prompt(text, prev_tail=prev_tail, next_head=next_head)
 
-    try:
-        response = model.generate_content(
-            prompt,
-            generation_config={"response_mime_type": "application/json"},
-            safety_settings={
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
-        )
+    safety_settings = {
+        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+    }
+
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = model.generate_content(
+                prompt,
+                generation_config={"response_mime_type": "application/json"},
+                safety_settings=safety_settings,
+            )
+        except Exception as e:
+            log.error("Page %d: API error (attempt %d/%d): %s", page_num, attempt, max_attempts, e)
+            if attempt < max_attempts:
+                if "429" in str(e):
+                    wait = 60 * attempt
+                    log.warning("Rate limit hit, waiting %ds...", wait)
+                    time.sleep(wait)
+                else:
+                    time.sleep(5)
+            continue
 
         try:
             result = json.loads(response.text)
-            terms = result.get("terms", [])
-
-            # Enrich extracted terms with metadata
-            enriched_terms = []
-            for term in terms:
-                enriched_terms.append({
-                    "Заманауи термин": term.get("modern_term", ""),
-                    "Алаш термині": term.get("alash_term", ""),
-                    "Сала": term.get("field", ""),
-                    "Кіші сала(subfield)": term.get("subfield", ""),
-                    "Заманауи түсініктеме": term.get("modern_definition", ""),
-                    "Алаш түсініктемесі": term.get("alash_definition", ""),
-                    "Анықтама бар ма": term.get("is_definition", False),
-                    "Екі бет арасындағы мәтін -- контекст үшін": term.get("context", ""),
-                    "Авторы": CONST_AUTHOR,
-                    "Басталатын беті": page_num,
-                    "Аяқталу беті": page_num,
-                    "Жазылу жылы": CONST_YEAR,
-                    "Сілтеме": CONST_LINK,
-                    "Ғылыми дискурсқа маңызы": term.get("significance", "")
-                })
-
-            log.info("Page %d: Extracted %d terms.", page_num, len(enriched_terms))
-            return enriched_terms
-
         except json.JSONDecodeError:
-            log.error("Page %d: Failed to parse JSON response.", page_num)
-            return []
-
-    except Exception as e:
-        log.error("Page %d: API error: %s", page_num, e)
-        if "429" in str(e):
-            log.warning("Rate limit hit, waiting 60s...")
-            time.sleep(60)
-            return extract_terms_from_page(page_data, model, prev_text, next_text)  # Retry once
-        return []
-
-
-def deduplicate_terms(terms: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Deduplicate terms by alash_term, keeping the entry with the longest alash_definition."""
-    seen: Dict[str, Dict[str, Any]] = {}
-    for term in terms:
-        key = term.get("Алаш термині", "").strip().lower()
-        if not key:
+            log.error("Page %d: Failed to parse JSON response (attempt %d/%d).", page_num, attempt, max_attempts)
+            if attempt < max_attempts:
+                time.sleep(5)
             continue
-        existing = seen.get(key)
-        if existing is None or len(term.get("Алаш түсініктемесі", "")) > len(existing.get("Алаш түсініктемесі", "")):
-            seen[key] = term
-    result = list(seen.values())
-    removed = len(terms) - len(result)
-    if removed:
-        log.info("Deduplication: removed %d duplicate term(s), %d unique term(s) remain.", removed, len(result))
-    return result
+
+        terms = result.get("terms", [])
+        enriched_terms = []
+        for term in terms:
+            enriched_terms.append({
+                "Заманауи термин": term.get("modern_term", ""),
+                "Алаш термині": term.get("alash_term", ""),
+                "Сала": term.get("field", ""),
+                "Кіші сала(subfield)": term.get("subfield", ""),
+                "Заманауи түсініктеме": term.get("modern_definition", ""),
+                "Алаш түсініктемесі": term.get("alash_definition", ""),
+                "Анықтама бар ма": term.get("is_definition", False),
+                "Екі бет арасындағы мәтін -- контекст үшін": term.get("context", ""),
+                "Авторы": CONST_AUTHOR,
+                "Басталатын беті": page_num,
+                "Аяқталу беті": page_num,
+                "Жазылу жылы": CONST_YEAR,
+                "Сілтеме": CONST_LINK,
+                "Ғылыми дискурсқа маңызы": term.get("significance", "")
+            })
+
+        log.info("Page %d: Extracted %d terms.", page_num, len(enriched_terms))
+        return enriched_terms
+
+    log.error("Page %d: All %d attempts failed, page will not be marked as processed.", page_num, max_attempts)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -320,12 +320,11 @@ COLUMNS = [
 
 
 def save_xlsx(terms: List[Dict[str, Any]], output_path: Path):
-    """Deduplicate *terms* and write them to an Excel file with a metadata header block."""
-    deduped = deduplicate_terms(terms)
-    if not deduped:
+    """Write terms to an Excel file with a metadata header block."""
+    if not terms:
         return
 
-    df = pd.DataFrame(deduped)
+    df = pd.DataFrame(terms)
     for col in COLUMNS:
         if col not in df.columns:
             df[col] = ""
@@ -441,6 +440,15 @@ def main():
         log.error("No OCR data loaded.")
         return
 
+    # Build page-number → text index for prev/next context lookup.
+    # Only adjacent pages (page_num ± 1) are used; gaps from failed OCR pages
+    # will naturally produce an empty string.
+    page_text: Dict[int, str] = {
+        parse_page_num(p): p.get("text", "")
+        for p in ocr_data
+        if parse_page_num(p) >= 0
+    }
+
     # --- Build index of pages to process ---
     selected_indices: List[int] = []
     if args.start_page is not None or args.end_page is not None:
@@ -487,32 +495,42 @@ def main():
     # --- Load existing state for resume ---
     all_terms, processed_pages = load_state(state_file)
 
-    # --- Main extraction loop ---
+    # --- Main extraction loop (parallel) ---
+    pending_indices = [
+        i for i in selected_indices
+        if parse_page_num(ocr_data[i]) not in processed_pages
+    ]
+    skipped = len(selected_indices) - len(pending_indices)
+    if skipped:
+        log.info("%d page(s) already processed, skipping.", skipped)
+
+    state_lock = threading.Lock()
     processed_count = 0
-    for src_idx in selected_indices:
+
+    def process_page(src_idx: int):
         page = ocr_data[src_idx]
         page_num = parse_page_num(page)
+        prev_text = page_text.get(page_num - 1, "")
+        next_text = page_text.get(page_num + 1, "")
+        return page_num, extract_terms_from_page(page, model, prev_text=prev_text, next_text=next_text)
 
-        if page_num in processed_pages:
-            log.info("Page %d: already processed, skipping.", page_num)
-            continue
-
-        prev_text = ocr_data[src_idx - 1].get("text", "") if src_idx > 0 else ""
-        next_text = ocr_data[src_idx + 1].get("text", "") if src_idx < len(ocr_data) - 1 else ""
-        terms = extract_terms_from_page(page, model, prev_text=prev_text, next_text=next_text)
-
-        all_terms.extend(terms)
-        if page_num >= 0:
-            processed_pages.add(page_num)
-
-        # Save after every LLM call so you can stop and resume at any point
-        save_state(state_file, all_terms, processed_pages)
-        save_xlsx(all_terms, output_xlsx)
-
-        processed_count += 1
-        time.sleep(2)
-        if processed_count % 10 == 0:
-            log.info("Processed %d new page(s)...", processed_count)
+    with ThreadPoolExecutor(max_workers=PARALLEL_REQUESTS) as executor:
+        futures = [executor.submit(process_page, idx) for idx in pending_indices]
+        for future in as_completed(futures):
+            page_num, terms = future.result()
+            if terms is None:
+                # No text or all attempts failed — leave unprocessed for retry
+                continue
+            with state_lock:
+                all_terms.extend(terms)
+                all_terms.sort(key=lambda t: t.get("Басталатын беті", -1))
+                if page_num >= 0:
+                    processed_pages.add(page_num)
+                save_state(state_file, all_terms, processed_pages)
+                save_xlsx(all_terms, output_xlsx)
+                processed_count += 1
+                if processed_count % 10 == 0:
+                    log.info("Processed %d new page(s)...", processed_count)
 
     if processed_count == 0:
         log.info("No new pages to process.")
