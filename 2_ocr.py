@@ -119,16 +119,18 @@ def filter_images_by_page_range(
     return filtered
 
 
-def output_file_has_content(output_file: Path) -> bool:
-    """Return True if output JSON file exists and contains non-whitespace content."""
+def load_existing_results(output_file: Path) -> List[Dict[str, Any]]:
+    """Load existing OCR results from output file, return empty list if none."""
     if not output_file.exists():
-        return False
+        return []
     try:
-        return bool(output_file.read_text(encoding="utf-8").strip())
-    except OSError as exc:
-        log.warning("Could not read %s: %s", output_file, exc)
-        # Fail closed to avoid accidental overwrite of existing data.
-        return True
+        content = output_file.read_text(encoding="utf-8").strip()
+        if not content:
+            return []
+        return json.loads(content)
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("Could not read existing results from %s: %s", output_file, exc)
+        return []
 
 
 def perform_ocr(image_path: Path, model) -> str:
@@ -220,14 +222,6 @@ def main():
     ):
         parser.error("--start-page cannot be greater than --end-page")
 
-    if output_file_has_content(args.output_file):
-        log.error(
-            "Output file is not empty: %s\n"
-            "Stop to prevent overriding/mixing old files. Please back up or clear this file, then rerun.",
-            args.output_file.resolve(),
-        )
-        return
-    
     try:
         configure_genai(args.api_key)
     except ValueError as e:
@@ -235,7 +229,7 @@ def main():
         return
 
     model = genai.GenerativeModel(MODEL_NAME)
-    
+
     images = get_sorted_images(args.input_dir)
     if not images:
         log.warning("No images found in %s", args.input_dir)
@@ -253,8 +247,15 @@ def main():
             log.warning("No images available after filtering.")
         return
 
-    results: List[Dict[str, Any]] = []
-    
+    results: List[Dict[str, Any]] = load_existing_results(args.output_file)
+    done_files = {entry["file"] for entry in results}
+    if done_files:
+        log.info("Resuming: %d page(s) already processed, skipping them.", len(done_files))
+        images = [img for img in images if img.name not in done_files]
+        if not images:
+            log.info("All pages already processed. Nothing to do.")
+            return
+
     if args.start_page is not None or args.end_page is not None:
         log.info(
             "Found %d images to process in page range %s-%s",
