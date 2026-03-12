@@ -12,8 +12,23 @@ import argparse
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import pandas as pd
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from config import (
+    TERMS_INPUT_FILE as INPUT_FILE,
+    TERMS_OUTPUT_FILE as OUTPUT_FILE,
+    TERMS_OVERLAP_CHARS as OVERLAP_CHARS,
+    TERMS_MODEL_NAME as MODEL_NAME,
+    CONST_YEAR,
+    CONST_LINK,
+    CONST_AUTHOR,
+)
+try:
+    from config import CONST_TITLE
+except ImportError:
+    CONST_TITLE = ""
 
 # Configure logging
 logging.basicConfig(
@@ -23,16 +38,35 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# Constants
-INPUT_FILE = "ocr_results.json"
-OUTPUT_FILE = "terms.xlsx"
-OVERLAP_CHARS = 300  # Characters from adjacent pages to include as context
-MODEL_NAME = "gemini-2.5-flash"
 
-# Metadata constants requested by user
-CONST_YEAR = 1923
-CONST_LINK = "https://kazneb.kz/la/bookView/view?brId=1597551&simple=true#"
-CONST_AUTHOR = "Е.Омарұлы - Физика"
+
+def load_dotenv(env_path: Path = Path(".env")) -> None:
+    """Load KEY=VALUE pairs from .env into process env without overwriting existing vars."""
+    if not env_path.exists():
+        return
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].strip()
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key:
+                continue
+            if (
+                (value.startswith('"') and value.endswith('"'))
+                or (value.startswith("'") and value.endswith("'"))
+            ):
+                value = value[1:-1]
+            os.environ.setdefault(key, value)
+    except OSError as exc:
+        log.warning("Could not read %s: %s", env_path, exc)
+
 
 def configure_genai(api_key: str | None = None):
     """Configure the Gemini API. Uses the provided key, or falls back to GEMINI_API_KEY env var."""
@@ -40,6 +74,27 @@ def configure_genai(api_key: str | None = None):
     if not key:
         raise ValueError("API key required: pass --api-key or set GEMINI_API_KEY in .env")
     genai.configure(api_key=key)
+
+
+def output_file_has_content(output_file: Path) -> bool:
+    """Return True if output file exists and is non-empty."""
+    if not output_file.exists():
+        return False
+    try:
+        return output_file.stat().st_size > 0
+    except OSError as exc:
+        log.warning("Could not inspect %s: %s", output_file, exc)
+        # Fail closed to avoid accidental overwrite of existing data.
+        return True
+
+
+def parse_page_num(page_data: Dict[str, Any]) -> int:
+    """Parse page number from OCR entry; returns -1 if missing/invalid."""
+    page_raw = page_data.get("page", -1)
+    try:
+        return int(page_raw)
+    except (TypeError, ValueError):
+        return -1
 
 def load_ocr_results(filepath: Path) -> List[Dict[str, Any]]:
     """Load OCR results from JSON file."""
@@ -101,8 +156,10 @@ def create_extraction_prompt(text: str, prev_tail: str = "", next_head: str = ""
    - Заңдық терминдер ("сот", "мүлік", "шарт", "айып").
    - Экономикалық атаулар ("салық", "капитал", "баға").
    - Философиялық ұғымдар ("болмыс", "таным", "сана").
+   - Педагогикалық және қазақ тіліне қатысты терминдер ("дыбыс", "буын", "сөйлем мүшесі", "әліппе", "оқыту әдісі", "тәрбие").
    - Өлшем бірліктер, Құрал-жабдықтар.
    - Арнайы кәсіби атаулар (кез келген пән бойынша).
+   - Мәтінде **қалың қаріппен (bold)** берілген сөздер/сөз тіркестері термин болуы мүмкін; оларды да міндетті түрде тексеріп, сәйкес келсе термин ретінде алыңыз.
 
 ### ШЫҒАРЫЛАТЫН МӘЛІМЕТТЕР (ӨТЕ МАҢЫЗДЫ):
 
@@ -225,10 +282,41 @@ def deduplicate_terms(terms: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def main():
     parser = argparse.ArgumentParser(description="Extract terms from OCR results to Excel")
-    parser.add_argument("--limit", type=int, help="Limit number of pages to process (for testing)")
-    parser.add_argument("--start", type=int, default=0, help="Start page index (0-based)")
+    parser.add_argument("--limit", type=int, help="Limit number of pages to process (for testing, index-based mode)")
+    parser.add_argument("--start", type=int, default=0, help="Start page index (0-based, index-based mode)")
+    parser.add_argument("--start-page", "-s", type=int, default=None, help="Start page number (inclusive)")
+    parser.add_argument("--end-page", "-e", type=int, default=None, help="End page number (inclusive)")
     parser.add_argument("--api-key", type=str, default=None, help="Gemini API key (overrides GEMINI_API_KEY env var)")
     args = parser.parse_args()
+
+    load_dotenv()
+
+    if args.start < 0:
+        parser.error("--start must be >= 0")
+    if args.limit is not None and args.limit < 1:
+        parser.error("--limit must be >= 1")
+    if args.start_page is not None and args.start_page < 1:
+        parser.error("--start-page must be >= 1")
+    if args.end_page is not None and args.end_page < 1:
+        parser.error("--end-page must be >= 1")
+    if (
+        args.start_page is not None
+        and args.end_page is not None
+        and args.start_page > args.end_page
+    ):
+        parser.error("--start-page cannot be greater than --end-page")
+    if (
+        (args.start_page is not None or args.end_page is not None)
+        and (args.start != 0 or args.limit is not None)
+    ):
+        parser.error("Use either --start/--limit (index mode) or --start-page/--end-page (page mode), not both")
+    if output_file_has_content(Path(OUTPUT_FILE)):
+        log.error(
+            "Output file is not empty: %s\n"
+            "Stop to prevent overriding/mixing old files. Please back up or clear this file, then rerun.",
+            Path(OUTPUT_FILE).resolve(),
+        )
+        return
 
     configure_genai(args.api_key)
     model = genai.GenerativeModel(MODEL_NAME)
@@ -238,23 +326,60 @@ def main():
         log.error("No OCR data loaded.")
         return
 
-    start_idx = args.start
-    end_idx = start_idx + args.limit if args.limit else len(ocr_data)
-    
-    ocr_data = ocr_data[start_idx:end_idx]
-    log.info("Processing pages %d to %d.", start_idx + 1, end_idx)
+    selected_indices: List[int] = []
+    if args.start_page is not None or args.end_page is not None:
+        skipped_invalid = 0
+        for i, page_data in enumerate(ocr_data):
+            page_num = parse_page_num(page_data)
+            if page_num < 1:
+                skipped_invalid += 1
+                continue
+            if args.start_page is not None and page_num < args.start_page:
+                continue
+            if args.end_page is not None and page_num > args.end_page:
+                continue
+            selected_indices.append(i)
+        if skipped_invalid:
+            log.warning("Skipped %d OCR record(s) with invalid page numbers.", skipped_invalid)
+        if not selected_indices:
+            log.warning(
+                "No OCR records matched page range %s-%s.",
+                args.start_page if args.start_page is not None else "*",
+                args.end_page if args.end_page is not None else "*",
+            )
+            return
+        log.info(
+            "Processing %d OCR record(s) in page range %s-%s.",
+            len(selected_indices),
+            args.start_page if args.start_page is not None else "*",
+            args.end_page if args.end_page is not None else "*",
+        )
+    else:
+        start_idx = args.start
+        end_idx = start_idx + args.limit if args.limit else len(ocr_data)
+        if start_idx >= len(ocr_data):
+            log.warning(
+                "Start index %d is out of range for OCR dataset of size %d.",
+                start_idx,
+                len(ocr_data),
+            )
+            return
+        end_idx = min(end_idx, len(ocr_data))
+        selected_indices = list(range(start_idx, end_idx))
+        log.info("Processing OCR indices %d to %d.", start_idx, end_idx - 1)
 
     all_terms = []
 
-    for i, page in enumerate(ocr_data):
-        prev_text = ocr_data[i - 1].get("text", "") if i > 0 else ""
-        next_text = ocr_data[i + 1].get("text", "") if i < len(ocr_data) - 1 else ""
+    for processed_count, src_idx in enumerate(selected_indices, start=1):
+        page = ocr_data[src_idx]
+        prev_text = ocr_data[src_idx - 1].get("text", "") if src_idx > 0 else ""
+        next_text = ocr_data[src_idx + 1].get("text", "") if src_idx < len(ocr_data) - 1 else ""
         terms = extract_terms_from_page(page, model, prev_text=prev_text, next_text=next_text)
         all_terms.extend(terms)
         # Sleep to avoid hitting rate limits too hard
         time.sleep(2)
-        if (i + 1) % 10 == 0:
-            log.info("Processed %d pages...", i + 1)
+        if processed_count % 10 == 0:
+            log.info("Processed %d page(s)...", processed_count)
 
     all_terms = deduplicate_terms(all_terms)
 
@@ -264,8 +389,8 @@ def main():
 
     # Create DataFrame
     df = pd.DataFrame(all_terms)
-    
-    # Ensure column order matches user request
+
+    # Ensure column order
     columns = [
         "Заманауи термин", "Алаш термині", "Сала", "Кіші сала(subfield)",
         "Заманауи түсініктеме", "Алаш түсініктемесі", "Анықтама бар ма",
@@ -273,21 +398,70 @@ def main():
         "Басталатын беті", "Аяқталу беті", "Жазылу жылы", "Сілтеме",
         "Ғылыми дискурсқа маңызы"
     ]
-    
-    # Reorder columns if they exist, create if missing (though they should be there)
     for col in columns:
         if col not in df.columns:
             df[col] = ""
-            
-    # Select only required columns and in the correct order
     df = df[columns]
 
-    # Save to Excel
+    # Save to Excel with metadata header block
     try:
-        df.to_excel(OUTPUT_FILE, index=False)
+        _save_with_metadata_header(df, OUTPUT_FILE)
         log.info("Successfully saved %d terms to %s", len(df), OUTPUT_FILE)
     except Exception as e:
         log.error("Failed to save Excel file: %s", e)
+
+
+def _save_with_metadata_header(df: pd.DataFrame, output_path: str):
+    """
+    Write *df* to an Excel file, preceded by a styled metadata block.
+    Metadata rows are bold, font size 24. Labels are in Kazakh.
+
+    Layout:
+      Row 1  : Кітап атауы  | <title>
+      Row 2  : Авторы        | <author>
+      Row 3  : Жазылу жылы  | <year>
+      Row 4  : Сілтеме      | <link>
+      Row 5  : (blank)
+      Row 6  : column headers (bold, size 11)
+      Row 7+ : data
+    """
+    meta_rows = [
+        ("Кітап атауы",  CONST_TITLE  or ""),
+        ("Авторы",       CONST_AUTHOR or ""),
+        ("Жазылу жылы",  str(CONST_YEAR) if CONST_YEAR else ""),
+        ("Сілтеме",      CONST_LINK   or ""),
+    ]
+
+    meta_font   = Font(bold=True, size=24)
+    header_font = Font(bold=True, size=11)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+
+    # --- Metadata rows ---
+    for i, (label, value) in enumerate(meta_rows, start=1):
+        lc = ws.cell(row=i, column=1, value=label)
+        vc = ws.cell(row=i, column=2, value=value)
+        lc.font = meta_font
+        vc.font = meta_font
+        ws.row_dimensions[i].height = 36  # tall enough for 24pt font
+
+    # Blank separator row (row 5 when 4 meta rows)
+    blank_row  = len(meta_rows) + 1
+    header_row = blank_row + 1
+
+    # --- Column header row ---
+    for col_idx, col_name in enumerate(df.columns, start=1):
+        hc = ws.cell(row=header_row, column=col_idx, value=col_name)
+        hc.font = header_font
+
+    # --- Data rows ---
+    for r_idx, row in enumerate(df.itertuples(index=False), start=header_row + 1):
+        for c_idx, value in enumerate(row, start=1):
+            ws.cell(row=r_idx, column=c_idx, value=value)
+
+    wb.save(output_path)
+
 
 if __name__ == "__main__":
     main()

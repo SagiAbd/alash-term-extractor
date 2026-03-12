@@ -19,12 +19,19 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
+from config import (
+    SCRAPER_DEFAULT_URL as DEFAULT_URL,
+    SCRAPER_DEFAULT_OUTPUT_DIR as DEFAULT_OUTPUT_DIR,
+    SCRAPER_PAGE_LOAD_TIMEOUT as PAGE_LOAD_TIMEOUT,
+    SCRAPER_IMAGE_CHANGE_TIMEOUT as IMAGE_CHANGE_TIMEOUT,
+    SCRAPER_MAX_RETRIES as MAX_RETRIES,
+)
+
 import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
@@ -36,11 +43,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-DEFAULT_URL = "https://kazneb.kz/la/bookView/view?brId=1597551&simple=true"
-DEFAULT_OUTPUT_DIR = "output"
-PAGE_LOAD_TIMEOUT = 15  # seconds
-IMAGE_CHANGE_TIMEOUT = 10  # seconds
-MAX_RETRIES = 3
+
 
 
 def create_driver(headless: bool = True) -> webdriver.Chrome:
@@ -102,7 +105,11 @@ def get_current_image_src(driver: webdriver.Chrome) -> str:
     """Get the current src attribute of the book page image."""
     try:
         img = driver.find_element(By.ID, "img")
-        return img.get_attribute("src") or ""
+        src = img.get_attribute("src") or ""
+        # JS can temporarily produce paths ending with /undefined; treat as invalid.
+        if not src or "undefined" in src.lower():
+            return ""
+        return src
     except Exception:
         return ""
 
@@ -118,26 +125,35 @@ def extract_page_number_from_src(src: str) -> int:
 def wait_for_image_change(
     driver: webdriver.Chrome, old_src: str, timeout: float = IMAGE_CHANGE_TIMEOUT
 ) -> str:
-    """Wait until the image src changes from old_src, return the new src."""
+    """Wait until the image src changes from old_src to a real URL, return the new src."""
     start = time.time()
     while time.time() - start < timeout:
-        new_src = get_current_image_src(driver)
-        if new_src and new_src != old_src:
-            # Give a tiny moment for the image element to stabilize
-            time.sleep(0.3)
+        new_src = get_current_image_src(driver)  # already filters "undefined"
+        # Accept only URLs that look like real image paths.
+        if new_src and new_src != old_src and ".png" in new_src.lower():
+            time.sleep(0.3)  # let the element stabilise
             return get_current_image_src(driver)
         time.sleep(0.3)
     raise TimeoutError(f"Image src did not change within {timeout}s")
 
 
 def navigate_to_page(driver: webdriver.Chrome, page_num: int) -> str:
-    """Navigate to a specific page number using the page input field."""
+    """Navigate to a specific page using the viewer's JS API."""
     old_src = get_current_image_src(driver)
+    if extract_page_number_from_src(old_src) == page_num:
+        return old_src
 
-    page_input = driver.find_element(By.ID, "pageNo")
-    page_input.clear()
-    page_input.send_keys(str(page_num))
-    page_input.send_keys(Keys.RETURN)
+    # Direct JS navigation avoids NaN/undefined states from input clear/enter races.
+    driver.execute_script(
+        """
+        const page = arguments[0];
+        if (typeof onNavigate !== "function") {
+            throw new Error("onNavigate() is not available");
+        }
+        onNavigate(page);
+        """,
+        page_num,
+    )
 
     return wait_for_image_change(driver, old_src)
 
@@ -204,6 +220,13 @@ def scrape_pages(
     """
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
+    if any(out_path.iterdir()):
+        log.error(
+            "Output directory is not empty: %s\n"
+            "Stop to prevent overriding/mixing old files. Please back up or clear this folder, then rerun.",
+            out_path.resolve(),
+        )
+        return
 
     log.info("Starting scraper...")
     driver = create_driver(headless=headless)
@@ -237,14 +260,25 @@ def scrape_pages(
         if start_page > 1:
             log.info("Jumping to page %d...", start_page)
             navigate_to_page(driver, start_page)
-            time.sleep(1)
+            # Wait until the image src is a real URL (not "undefined" / empty)
+            deadline = time.time() + PAGE_LOAD_TIMEOUT
+            while time.time() < deadline:
+                if get_current_image_src(driver):
+                    break
+                time.sleep(0.5)
+            else:
+                log.warning("Image did not load after jumping to page %d", start_page)
 
         # --- Main download loop ---
         for page_num in range(start_page, end_page + 1):
             img_src = get_current_image_src(driver)
             if not img_src:
-                log.error("Page %d: no image src found, skipping", page_num)
-                continue
+                log.warning("Page %d: no valid image src, retrying navigation", page_num)
+                try:
+                    img_src = navigate_to_page(driver, page_num)
+                except TimeoutError:
+                    log.error("Page %d: no image src found, skipping", page_num)
+                    continue
 
             file_name = f"{page_num:04d}.png"
             save_file = out_path / file_name
@@ -261,10 +295,10 @@ def scrape_pages(
             # Advance to next page (unless we're on the last one)
             if page_num < end_page:
                 try:
-                    click_next_page(driver)
+                    navigate_to_page(driver, page_num + 1)
                 except TimeoutError:
                     log.warning(
-                        "Page %d: timed out waiting for next page, retrying via page input",
+                        "Page %d: timed out waiting for next page, retrying direct navigation",
                         page_num,
                     )
                     try:

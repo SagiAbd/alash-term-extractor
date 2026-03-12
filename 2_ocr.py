@@ -4,6 +4,7 @@ OCR script using Gemini API to preserve layout when extracting text from images.
 
 Usage:
     python ocr.py --input-dir output --output-file ocr_results.json
+    python ocr.py --start-page 26 --end-page 29
     python ocr.py --api-key YOUR_API_KEY
 """
 
@@ -16,6 +17,12 @@ import os
 from pathlib import Path
 from typing import List, Dict, Any
 
+from config import (
+    OCR_DEFAULT_INPUT_DIR as DEFAULT_INPUT_DIR,
+    OCR_DEFAULT_OUTPUT_FILE as DEFAULT_OUTPUT_FILE,
+    OCR_MODEL_NAME as MODEL_NAME,
+)
+
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
@@ -26,9 +33,35 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-DEFAULT_INPUT_DIR = "output"
-DEFAULT_OUTPUT_FILE = "ocr_results.json"
-MODEL_NAME = "gemini-2.0-flash"
+
+
+def load_dotenv(env_path: Path = Path(".env")) -> None:
+    """Load KEY=VALUE pairs from .env into process env without overwriting existing vars."""
+    if not env_path.exists():
+        return
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].strip()
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key:
+                continue
+            if (
+                (value.startswith('"') and value.endswith('"'))
+                or (value.startswith("'") and value.endswith("'"))
+            ):
+                value = value[1:-1]
+            os.environ.setdefault(key, value)
+    except OSError as exc:
+        log.warning("Could not read %s: %s", env_path, exc)
+
 
 def configure_genai(api_key: str | None = None):
     """Configure the Gemini API. Uses the provided key, or falls back to GEMINI_API_KEY env var."""
@@ -48,6 +81,54 @@ def get_sorted_images(input_dir: Path) -> List[Path]:
     # Sort by filename (assuming they are named like 0001.png, 0002.png)
     images.sort(key=lambda p: p.name)
     return images
+
+
+def parse_page_num(image_path: Path) -> int:
+    """Parse page number from image filename stem, return -1 if invalid."""
+    try:
+        return int(image_path.stem)
+    except ValueError:
+        return -1
+
+
+def filter_images_by_page_range(
+    images: List[Path], start_page: int | None, end_page: int | None
+) -> List[Path]:
+    """Filter images by inclusive page range based on filename page numbers."""
+    if start_page is None and end_page is None:
+        return images
+
+    filtered: List[Path] = []
+    invalid_name_count = 0
+    for img in images:
+        page_num = parse_page_num(img)
+        if page_num < 0:
+            invalid_name_count += 1
+            continue
+        if start_page is not None and page_num < start_page:
+            continue
+        if end_page is not None and page_num > end_page:
+            continue
+        filtered.append(img)
+
+    if invalid_name_count:
+        log.warning(
+            "Skipped %d image(s) with non-numeric filenames while applying page range filter.",
+            invalid_name_count,
+        )
+    return filtered
+
+
+def output_file_has_content(output_file: Path) -> bool:
+    """Return True if output JSON file exists and contains non-whitespace content."""
+    if not output_file.exists():
+        return False
+    try:
+        return bool(output_file.read_text(encoding="utf-8").strip())
+    except OSError as exc:
+        log.warning("Could not read %s: %s", output_file, exc)
+        # Fail closed to avoid accidental overwrite of existing data.
+        return True
 
 
 def perform_ocr(image_path: Path, model) -> str:
@@ -107,8 +188,40 @@ def main():
         "--api-key", "-k",
         help="Gemini API Key (optional if GEMINI_API_KEY env var is set)",
     )
+    parser.add_argument(
+        "--start-page", "-s",
+        type=int,
+        default=None,
+        help="First page number to OCR (inclusive, based on filename stem)",
+    )
+    parser.add_argument(
+        "--end-page", "-e",
+        type=int,
+        default=None,
+        help="Last page number to OCR (inclusive, based on filename stem)",
+    )
     
     args = parser.parse_args()
+    load_dotenv()
+
+    if args.start_page is not None and args.start_page < 1:
+        parser.error("--start-page must be >= 1")
+    if args.end_page is not None and args.end_page < 1:
+        parser.error("--end-page must be >= 1")
+    if (
+        args.start_page is not None
+        and args.end_page is not None
+        and args.start_page > args.end_page
+    ):
+        parser.error("--start-page cannot be greater than --end-page")
+
+    if output_file_has_content(args.output_file):
+        log.error(
+            "Output file is not empty: %s\n"
+            "Stop to prevent overriding/mixing old files. Please back up or clear this file, then rerun.",
+            args.output_file.resolve(),
+        )
+        return
     
     try:
         configure_genai(args.api_key)
@@ -123,32 +236,34 @@ def main():
         log.warning("No images found in %s", args.input_dir)
         return
 
+    images = filter_images_by_page_range(images, args.start_page, args.end_page)
+    if not images:
+        if args.start_page is not None or args.end_page is not None:
+            log.warning(
+                "No images matched requested page range: %s-%s",
+                args.start_page if args.start_page is not None else "*",
+                args.end_page if args.end_page is not None else "*",
+            )
+        else:
+            log.warning("No images available after filtering.")
+        return
+
     results: List[Dict[str, Any]] = []
     
-    # Check if output file exists and load existing results to resume if needed
-    if args.output_file.exists():
-        try:
-            with open(args.output_file, "r", encoding="utf-8") as f:
-                existing_data = json.load(f)
-                if isinstance(existing_data, list):
-                    # Filter out already processed images
-                    processed_files = {item.get("file") for item in existing_data}
-                    images = [img for img in images if img.name not in processed_files]
-                    results = existing_data
-                    log.info("Resuming from %d existing records...", len(results))
-        except json.JSONDecodeError:
-            log.warning("Output file exists but is not valid JSON. Starting fresh.")
-    
-    log.info("Found %d images to process", len(images))
+    if args.start_page is not None or args.end_page is not None:
+        log.info(
+            "Found %d images to process in page range %s-%s",
+            len(images),
+            args.start_page if args.start_page is not None else "*",
+            args.end_page if args.end_page is not None else "*",
+        )
+    else:
+        log.info("Found %d images to process", len(images))
 
     for i, img_path in enumerate(images):
         text = perform_ocr(img_path, model)
         
-        # Try to extract page number from filename
-        try:
-            page_num = int(img_path.stem)
-        except ValueError:
-            page_num = -1
+        page_num = parse_page_num(img_path)
 
         result_entry = {
             "page": page_num,
