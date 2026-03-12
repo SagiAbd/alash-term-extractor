@@ -25,6 +25,7 @@ from config import (
     OUTPUT_BASE_DIR,
     TERMS_OVERLAP_CHARS as OVERLAP_CHARS,
     TERMS_MODEL_NAME as MODEL_NAME,
+TERMS_FALLBACK_MODELS as FALLBACK_MODEL_NAMES,
     PARALLEL_REQUESTS,
     CONST_YEAR,
     CONST_LINK,
@@ -111,77 +112,43 @@ def create_extraction_prompt(text: str, prev_tail: str = "", next_head: str = ""
     if next_head:
         context_block += f"\n\n[КЕЛЕСІ БЕТ БАСЫ — тек контекст үшін]:\n\"\"\"\n{next_head}\n\"\"\"\n"
 
-    return f"""
-Сіз Алаш кезеңінің (ХХ ғасырдың басы) тіл білімі мен ғылым тарихы бойынша сарапшысыз.
-Сіз Алаш кезеңіне жататын ғылыми немесе оқу мәтінін (тарихи мәтін) талдап жатырсыз.
+    return f"""Сіз Алаш кезеңі (ХХ ғасырдың басы) мәтіндерінен ғылыми терминдер шығаратын сарапшысыз.
 
-Сіздің мақсатыңыз: Мәтіннен **кез келген пәнге жататын** арнайы терминдерді, ғылыми ұғымдарды, техникалық сөздерді, өлшем бірліктерін, кәсіби атауларды теріп алу.
-
-Талданатын мәтін:
+Мәтін (терминдерді тек НЕГІЗГІ МӘТІННЕН алыңыз):
 {context_block}
 
-МАҢЫЗДЫ: Терминдерді тек **НЕГІЗГІ МӘТІННЕН** алыңыз. Алдыңғы/келесі бет мәтіндері тек анықтаманың бет шегінде үзілмеуін тексеру үшін берілген.
+### ТЕРМИН ТАҢДАУ ЕРЕЖЕСІ
 
-### НЕГІЗГІ ЕРЕЖЕЛЕР (ҚАТАҢ САҚТАЛСЫН):
+**Алыңыз** — белгілі бір пән аясында арнайы мағынасы бар сөздер/сөз тіркестері:
+физика, химия, биология, математика, медицина, заң, экономика, философия, педагогика, техника және т.б. салалардың терминдері; өлшем бірліктері; мәтінде **қалың қаріппен** берілгендер.
+Мысал: "айналым капиталы", "заңды тұлға", "тепе-теңдік", "оқыту әдісі", "буын", "тамыр жүйесі".
 
-1. **Тақырып ауқымы — КЕҢ ПӘНАРАЛЫҚ**:
-   Мәтін **кез келген пәнге** — физика, химия, биология, математика, медицина, заң, тарих, экономика, философия, география, техника және т.б. — жататын болуы мүмкін. Пәнге қарамастан **барлық арнайы, кәсіби немесе ғылыми терминдерді** алыңыз.
+**Алмаңыз**:
+- Жалпы қолданыстағы сөздер: "кітап", "адам", "үй", "бару", "бет"
+- Жай әкімшілік атаулар: "облысы", "уезі", "болысы", "ауданы", "ауылы"
+- Жалқы есімдер (адам, жер аттары)
+- Жалпы газет тіліндегі күнделікті сөз тіркестері
 
-2. **ТЕРМИНДІ ҚАЛАЙ ТАНУҒА БОЛАДЫ?**
-   Термин дегеніміз — жалпы тұрмыстық сөз емес, белгілі бір пән немесе кәсіп аясында **арнайы мағынасы бар** сөз немесе сөз тіркесі.
-   - **Алыңыз**: "күш", "салмақ", "буын", "тамыр жүйесі", "балық сүйегі", "жылдамдық", "тепе-теңдік", "айналым капиталы", "сот талқылауы", "заңды тұлға".
-   - **АЛМАҢЫЗ**: "кітап", "адам", "бару", "үлкен", "бет" — бұлар жалпы қолданыстағы сөздер.
-   - **КҮМӘН ТУСА**: егер сөз жалпы халыққа таныс болмаса немесе белгілі бір пән аясында ерекше мағынасы болса — оны **алыңыз**.
+**Күмән туса — алмаңыз.** Аз бірақ дәл терминдер — көп бірақ нақты емес терминдерден артық.
 
-3. **АНЫҚТАМАСЫ БАР НЕМЕСЕ ЖОҚ — ЕКЕУІН ДЕ АЛЫҢЫЗ**:
-   - Егер мәтінде термин **анықталса немесе түсіндірілсе** → `is_definition: true`, `alash_definition` өрісіне сол анықтаманы **ТҮПНҰСҚАДАН ӨЗГЕРІССІЗ** көшіріп жазыңыз.
-   - Егер термин **жай ғана қолданылған, бірақ түсіндірілмеген** болса → `is_definition: false`, `alash_definition` өрісін **БОС** қалдырыңыз.
+### is_definition ЕРЕЖЕСІ
 
-4. **Сүзгілеу (Алуға БОЛМАЙДЫ)**:
-   - Жалпы қолданыстағы сөздерді ("кітап", "бет", "білу", "адам", "үй", "жер").
-   - Жалпы етістіктерді (егер ол арнайы ғылыми процесс немесе операция болмаса).
-   - Жалқы есімдерді (адам аттары, жер аттары).
-   - Мағынасыз сөз үзінділерін немесе жеке тұрған сандарды.
+`is_definition: true` — тек мәтінде термин нақты **анықталғанда** ("X — бұл Y", "X деп аталатын Y" сияқты толық түсіндірме сөйлем бар болса).
+`is_definition: false` — термин жай қолданылған, бірақ анықталмаған. `alash_definition` өрісін `""` қалдырыңыз.
 
-5. **Терминге не жатады (мысалдар)**:
-   - Ғылыми шамалар мен ұғымдар (физика, химия, математика...).
-   - Биологиялық, медициналық атаулар ("балық сүйегі", "буын", "тамыр").
-   - Заңдық терминдер ("сот", "мүлік", "шарт", "айып").
-   - Экономикалық атаулар ("салық", "капитал", "баға").
-   - Философиялық ұғымдар ("болмыс", "таным", "сана").
-   - Педагогикалық және қазақ тіліне қатысты терминдер ("дыбыс", "буын", "сөйлем мүшесі", "әліппе", "оқыту әдісі", "тәрбие").
-   - Өлшем бірліктер, Құрал-жабдықтар.
-   - Арнайы кәсіби атаулар (кез келген пән бойынша).
-   - Мәтінде **қалың қаріппен (bold)** берілген сөздер/сөз тіркестері термин болуы мүмкін; оларды да міндетті түрде тексеріп, сәйкес келсе термин ретінде алыңыз.
-
-### ШЫҒАРЫЛАТЫН МӘЛІМЕТТЕР (ӨТЕ МАҢЫЗДЫ):
-
-Төмендегі өрістер бойынша JSON қайтарыңыз.
-
-1. **alash_term** (Алаш термині): Мәтінде қалай жазылса, **ДӘЛ СОЛАЙ, ӨЗГЕРІССІЗ** алынсын. Ешқандай түзету енгізбеңіз.
-2. **modern_term** (Заманауи термин): Осы терминнің қазіргі қазақ тіліндегі ғылыми баламасы.
-3. **field** (Сала): Ғылым саласы (Физика, Химия, Биология, Математика, Медицина, Заң, Экономика, Философия, Тарих, Техника және т.б.).
-4. **subfield** (Кіші сала): Нақты бөлімі (мысалы: Механика, Оптика, Тұқым қуалаушылық, Азаматтық заң т.б.).
-5. **modern_definition** (Заманауи түсініктеме): Терминнің қазіргі ғылыми анықтамасы (МІНДЕТТІ, is_definition мәніне қарамастан).
-6. **alash_definition** (Алаш түсініктемесі): Егер `is_definition: true` болса — автор берген анықтама сөйлемін мәтіннен **ДӘЛМЕ-ДӘЛ КӨШІРІҢІЗ**. Егер `is_definition: false` болса — **БОС ЖОЛДЫ** қалдырыңыз ("").
-7. **is_definition** (Анықтама бар ма?): `true` — егер мәтінде терминнің анықтамасы/түсіндірмесі берілген болса; `false` — егер термин тек қолданылған, бірақ анықталмаған болса.
-8. **context** (Контекст): Термин кездесетін сөйлем және оның айналасындағы 1-2 сөйлем (контекст үшін). Мәтіннен **ДӘЛМЕ-ДӘЛ КӨШІРІЛСІН (COPY-PASTE)**. Түзетуге, қысқартуға болмайды.
-9. **significance** (Ғылыми маңызы): Бұл термин ғылыми тіл қалыптастыруда несімен маңызды?
-
-### OUTPUT FORMAT (JSON ONLY):
-Return ONLY a valid JSON object. Keys must be in English for JSON structure, values in Kazakh.
+### JSON ШЫҒАРЫЛЫМЫ (тек JSON, басқа ештеңе жоқ):
 {{
   "terms": [
     {{
-      "alash_term": "...",
-      "modern_term": "...",
-      "field": "...",
-      "subfield": "...",
-      "modern_definition": "...",
-      "alash_definition": "...",
+      "alash_term": "мәтіндегі дәл түрі (өзгертпе)",
+      "modern_term": "қазіргі қазақ тіліндегі ғылыми баламасы",
+      "field": "ғылым саласы",
+      "subfield": "нақты бөлімі",
+      "modern_definition": "қазіргі ғылыми анықтамасы (міндетті)",
+      "alash_definition": "мәтіннен дәлме-дәл анықтама (немесе \"\")",
       "is_definition": true,
-      "context": "...",
-      "significance": "..."
+      "context": "термин кездесетін сөйлем + 1-2 қоршаған сөйлем (дәлме-дәл)",
+      "significance": "ғылыми тіл қалыптастырудағы маңызы"
     }}
   ]
 }}
@@ -189,11 +156,15 @@ Return ONLY a valid JSON object. Keys must be in English for JSON structure, val
 
 def extract_terms_from_page(
     page_data: Dict[str, Any],
-    model,
+    models: List,
     prev_text: str = "",
     next_text: str = "",
 ) -> Optional[List[Dict[str, Any]]]:
     """Extract terms from a single page using Gemini API.
+
+    Tries each model in *models* in order. Within each model up to max_attempts
+    retries are made for transient errors. A blocked response (PROHIBITED_CONTENT)
+    immediately moves to the next fallback model.
 
     Returns None if the page was skipped without calling the API (e.g. empty
     text), so the caller can avoid marking it as processed.  Returns a list
@@ -218,56 +189,67 @@ def extract_terms_from_page(
     }
 
     max_attempts = 3
-    for attempt in range(1, max_attempts + 1):
-        try:
-            response = model.generate_content(
-                prompt,
-                generation_config={"response_mime_type": "application/json"},
-                safety_settings=safety_settings,
-            )
-        except Exception as e:
-            log.error("Page %d: API error (attempt %d/%d): %s", page_num, attempt, max_attempts, e)
-            if attempt < max_attempts:
-                if "429" in str(e):
-                    wait = 60 * attempt
-                    log.warning("Rate limit hit, waiting %ds...", wait)
-                    time.sleep(wait)
-                else:
+    for model_idx, model in enumerate(models):
+        model_name = getattr(model, "model_name", f"model[{model_idx}]")
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = model.generate_content(
+                    prompt,
+                    generation_config={"response_mime_type": "application/json"},
+                    safety_settings=safety_settings,
+                )
+            except Exception as e:
+                log.error("Page %d [%s]: API error (attempt %d/%d): %s", page_num, model_name, attempt, max_attempts, e)
+                if attempt < max_attempts:
+                    if "429" in str(e):
+                        wait = 60 * attempt
+                        log.warning("Rate limit hit, waiting %ds...", wait)
+                        time.sleep(wait)
+                    else:
+                        time.sleep(5)
+                continue
+
+            try:
+                response_text = response.text
+            except ValueError as e:
+                log.warning(
+                    "Page %d [%s]: Response blocked (attempt %d/%d): %s — trying next model.",
+                    page_num, model_name, attempt, max_attempts, e,
+                )
+                break  # blocked: skip remaining attempts for this model
+
+            try:
+                result = json.loads(response_text)
+            except json.JSONDecodeError:
+                log.error("Page %d [%s]: Failed to parse JSON (attempt %d/%d).", page_num, model_name, attempt, max_attempts)
+                if attempt < max_attempts:
                     time.sleep(5)
-            continue
+                continue
 
-        try:
-            result = json.loads(response.text)
-        except json.JSONDecodeError:
-            log.error("Page %d: Failed to parse JSON response (attempt %d/%d).", page_num, attempt, max_attempts)
-            if attempt < max_attempts:
-                time.sleep(5)
-            continue
+            terms = result.get("terms", [])
+            enriched_terms = []
+            for term in terms:
+                enriched_terms.append({
+                    "Заманауи термин": term.get("modern_term", ""),
+                    "Алаш термині": term.get("alash_term", ""),
+                    "Сала": term.get("field", ""),
+                    "Кіші сала(subfield)": term.get("subfield", ""),
+                    "Заманауи түсініктеме": term.get("modern_definition", ""),
+                    "Алаш түсініктемесі": term.get("alash_definition", ""),
+                    "Анықтама бар ма": term.get("is_definition", False),
+                    "Екі бет арасындағы мәтін -- контекст үшін": term.get("context", ""),
+                    "Авторы": CONST_AUTHOR,
+                    "Басталатын беті": page_num,
+                    "Аяқталу беті": page_num,
+                    "Жазылу жылы": CONST_YEAR,
+                    "Сілтеме": CONST_LINK,
+                    "Ғылыми дискурсқа маңызы": term.get("significance", "")
+                })
 
-        terms = result.get("terms", [])
-        enriched_terms = []
-        for term in terms:
-            enriched_terms.append({
-                "Заманауи термин": term.get("modern_term", ""),
-                "Алаш термині": term.get("alash_term", ""),
-                "Сала": term.get("field", ""),
-                "Кіші сала(subfield)": term.get("subfield", ""),
-                "Заманауи түсініктеме": term.get("modern_definition", ""),
-                "Алаш түсініктемесі": term.get("alash_definition", ""),
-                "Анықтама бар ма": term.get("is_definition", False),
-                "Екі бет арасындағы мәтін -- контекст үшін": term.get("context", ""),
-                "Авторы": CONST_AUTHOR,
-                "Басталатын беті": page_num,
-                "Аяқталу беті": page_num,
-                "Жазылу жылы": CONST_YEAR,
-                "Сілтеме": CONST_LINK,
-                "Ғылыми дискурсқа маңызы": term.get("significance", "")
-            })
+            log.info("Page %d [%s]: Extracted %d terms.", page_num, model_name, len(enriched_terms))
+            return enriched_terms
 
-        log.info("Page %d: Extracted %d terms.", page_num, len(enriched_terms))
-        return enriched_terms
-
-    log.error("Page %d: All %d attempts failed, page will not be marked as processed.", page_num, max_attempts)
+    log.error("Page %d: All models exhausted, page will not be marked as processed.", page_num)
     return None
 
 
@@ -433,7 +415,8 @@ def main():
         parser.error("Use either --start/--limit (index mode) or --start-page/--end-page (page mode), not both")
 
     configure_genai(args.api_key)
-    model = genai.GenerativeModel(MODEL_NAME)
+    models = [genai.GenerativeModel(name) for name in [MODEL_NAME] + FALLBACK_MODEL_NAMES]
+    log.info("Model chain: %s", " → ".join([MODEL_NAME] + FALLBACK_MODEL_NAMES))
 
     ocr_data = load_ocr_results(input_file)
     if not ocr_data:
@@ -512,7 +495,7 @@ def main():
         page_num = parse_page_num(page)
         prev_text = page_text.get(page_num - 1, "")
         next_text = page_text.get(page_num + 1, "")
-        return page_num, extract_terms_from_page(page, model, prev_text=prev_text, next_text=next_text)
+        return page_num, extract_terms_from_page(page, models, prev_text=prev_text, next_text=next_text)
 
     with ThreadPoolExecutor(max_workers=PARALLEL_REQUESTS) as executor:
         futures = [executor.submit(process_page, idx) for idx in pending_indices]
