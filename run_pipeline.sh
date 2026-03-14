@@ -9,21 +9,33 @@ fi
 # Install dependencies
 pip install -q -r requirements.txt
 
-# Optional page range for term extraction (passed as env vars or args)
 # Usage examples:
-#   ./run_pipeline.sh                          # full pipeline, all pages
-#   TERMS_START=10 TERMS_END=50 ./run_pipeline.sh
+#   ./run_pipeline.sh --url "https://kazneb.kz/kk/bookView/view?brId=1151021&simple=true"
+#   TERMS_START=10 TERMS_END=50 ./run_pipeline.sh --url "..."
+URL=""
 TERMS_START="${TERMS_START:-}"
 TERMS_END="${TERMS_END:-}"
 
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --url) URL="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+
+URL_ARG=""
+if [ -n "$URL" ]; then
+    URL_ARG="--url $URL"
+fi
+
 echo "=== Step 0: Scrape book metadata ==="
-python 0_metadata_scrape.py
+python3 0_metadata_scrape.py $URL_ARG
 
 echo "=== Step 1: Scrape page images ==="
-python 1_scrape.py "$@"
+python3 1_scrape.py $URL_ARG
 
 echo "=== Step 2: OCR images ==="
-python 2_ocr.py
+python3 2_ocr.py
 
 echo "=== Step 3: Extract terms ==="
 TERMS_ARGS=""

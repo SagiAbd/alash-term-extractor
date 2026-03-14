@@ -2,6 +2,18 @@
 
 All notable updates in this repository.
 
+## 2026-03-14
+
+### Added
+
+- `1_scrape_parallel.py`: new wrapper that splits the page range into N equal chunks and runs N instances of `1_scrape.py` simultaneously, each writing to an isolated temp directory; merges all images into the final `output/<book>/images/` folder on completion. Default workers: 20.
+- Added total elapsed time log line at the end of `0_metadata_scrape.py`, `1_scrape_parallel.py`, `2_ocr.py`, and `3_extract_terms.py`.
+
+### Changed
+
+- Updated README pipeline diagram and usage section to reflect new flow: `0_metadata_scrape.py` → `1_scrape_parallel.py` → `2_ocr.py` → `3_extract_terms.py`.
+- `0_metadata_scrape.py`, `2_ocr.py`, `config.py`: upgraded fallback/default Gemini model references from `gemini-2.0-flash` → `gemini-2.5-flash`.
+
 ## 2026-03-13
 
 ### Changed

@@ -541,4 +541,7 @@ def main():
 
 
 if __name__ == "__main__":
+    _t0 = time.time()
     main()
+    _elapsed = time.time() - _t0
+    log.info("Total time: %dm %02ds", int(_elapsed // 60), int(_elapsed % 60))

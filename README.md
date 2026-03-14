@@ -6,18 +6,18 @@ It includes an optional metadata pre-step (`0_metadata_scrape.py`) plus the main
 ## Pipeline
 
 ```
-0_metadata_scrape.py  →  updates config.py (title, author, year, link)
-1_scrape.py           →  output/<author>__<title>/images/*.png
-2_ocr.py              →  output/<author>__<title>/ocr.json
-3_extract_terms.py    →  output/<author>__<title>/terms.xlsx
+0_metadata_scrape.py   →  .metadata.json (title, author, year, link, total_pages)
+1_scrape_parallel.py   →  output/<author>__<title>/images/*.png  (20 workers)
+2_ocr.py               →  output/<author>__<title>/ocr.json
+3_extract_terms.py     →  output/<author>__<title>/terms.xlsx
 ```
 
 All outputs for a book are grouped under one subfolder of `output/`, named after the author and title set by step 0.
 
 | Step | Script | What it does |
 |------|--------|--------------|
-| 0 (optional) | `0_metadata_scrape.py` | Uses Selenium + Gemini to extract book metadata (title/author/year/link/pages) and write it to `config.py` |
-| 1 | `1_scrape.py` | Uses Selenium to download page images from the kazneb.kz book viewer |
+| 0 | `0_metadata_scrape.py` | Uses Selenium + Gemini to extract book metadata (title/author/year/link/pages) and write it to `.metadata.json` |
+| 1 | `1_scrape_parallel.py` | Splits pages into 20 chunks and runs 20 instances of `1_scrape.py` simultaneously |
 | 2 | `2_ocr.py` | Sends each image to Gemini Vision API and transcribes the text |
 | 3 | `3_extract_terms.py` | Sends OCR text to Gemini and extracts Alash-era scientific terms into Excel |
 
@@ -48,44 +48,46 @@ cp .env.example .env
 
 ## Usage
 
-### Run the full pipeline
+### Run the full pipeline for a book
 
 ```bash
-bash run_pipeline.sh
+# Step 0 — extract metadata from the book page (run this first)
+python3 0_metadata_scrape.py --url "https://kazneb.kz/kk/bookView/view?brId=XXXXXX&simple=true"
+
+# Step 1 — scrape all pages in parallel (20 workers by default)
+python3 1_scrape_parallel.py
+
+# Step 2 — OCR all images
+python3 2_ocr.py
+
+# Step 3 — extract terms into Excel
+python3 3_extract_terms.py
 ```
 
-Pass a page range to step 3 via env vars:
+### Step 1 options
 
 ```bash
-TERMS_START=10 TERMS_END=50 bash run_pipeline.sh
+# Change number of parallel workers
+python3 1_scrape_parallel.py --workers 10
+
+# Scrape a specific page range
+python3 1_scrape_parallel.py --start-page 1 --end-page 100
+
+# Override URL (if different from what step 0 saved)
+python3 1_scrape_parallel.py --url "https://kazneb.kz/kk/bookView/view?brId=XXXXXX&simple=true"
 ```
 
-### Run steps individually
+### Step 2 & 3 options
 
 ```bash
-# Step 0 (recommended) — auto-fill metadata in config.py from book page
-python 0_metadata_scrape.py --url "https://kazneb.kz/la/bookView/view?brId=1597551&simple=true"
+# OCR a specific page range
+python3 2_ocr.py --start-page 26 --end-page 29
 
-# Step 1 — scrape all pages (output dir derived from config.py author/title)
-python 1_scrape.py --url "https://kazneb.kz/la/bookView/view?brId=1597551&simple=true"
+# Extract terms for a page range
+python3 3_extract_terms.py --start-page 26 --end-page 29
 
-# Step 1 — scrape a page range (inclusive)
-python 1_scrape.py --start-page 26 --end-page 148
-
-# Step 2 — OCR all images (paths derived from config.py author/title)
-python 2_ocr.py
-
-# Step 2 — OCR a page range by filename page number (inclusive)
-python 2_ocr.py --start-page 26 --end-page 29
-
-# Step 3 — extract terms from all OCR records (resumes if partially done)
-python 3_extract_terms.py
-
-# Step 3 — extract terms for a page number range (inclusive)
-python 3_extract_terms.py --start-page 26 --end-page 29
-
-# Step 3 — index-based test run (0-based index in ocr.json)
-python 3_extract_terms.py --start 5 --limit 10
+# Index-based test run (0-based index in ocr.json)
+python3 3_extract_terms.py --start 5 --limit 10
 ```
 
 ## Safety Stops & Resume

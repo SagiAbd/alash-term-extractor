@@ -25,7 +25,7 @@ from config import (
     book_dir_name,
 )
 
-OCR_FALLBACK_MODEL_NAME = "gemini-2.0-flash"
+OCR_FALLBACK_MODEL_NAME = "gemini-2.5-flash"
 
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
@@ -314,4 +314,7 @@ def main():
 
 
 if __name__ == "__main__":
+    _t0 = time.time()
     main()
+    _elapsed = time.time() - _t0
+    log.info("Total time: %dm %02ds", int(_elapsed // 60), int(_elapsed % 60))
