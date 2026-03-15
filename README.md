@@ -20,6 +20,7 @@ All outputs for a book are grouped under one subfolder of `output/`, named after
 | 1 | `1_scrape_parallel.py` | Splits pages into 20 chunks and runs 20 instances of `1_scrape.py` simultaneously |
 | 2 | `2_ocr.py` | Sends each image to Gemini Vision API and transcribes the text |
 | 3 | `3_extract_terms.py` | Sends OCR text to Gemini and extracts Alash-era scientific terms into Excel |
+| batch | `run_batch.py` | Runs the full 0→1→2→3→rerun-failed pipeline for each URL in `.list.json` |
 
 ## Setup
 
@@ -48,7 +49,7 @@ cp .env.example .env
 
 ## Usage
 
-### Run the full pipeline for a book
+### Run the full pipeline for a single book
 
 ```bash
 # Step 0 — extract metadata from the book page (run this first)
@@ -63,6 +64,27 @@ python3 2_ocr.py
 # Step 3 — extract terms into Excel
 python3 3_extract_terms.py
 ```
+
+### Run the batch pipeline for multiple books
+
+Create a `.list.json` file with an array of URLs:
+
+```json
+[
+  "https://kazneb.kz/kk/bookView/view?brId=1177367&simple=true",
+  "https://kazneb.kz/kk/bookView/view?brId=1561557&simple=true"
+]
+```
+
+Then run:
+
+```bash
+python3 run_batch.py                  # uses .list.json by default
+python3 run_batch.py --list urls.json # custom list file
+python3 run_batch.py --workers 15     # override parallel workers
+```
+
+For each URL, `run_batch.py` runs: `0_metadata_scrape` → `1_scrape_parallel` → `2_ocr` → `3_extract_terms` → `3_extract_terms --rerun-failed`. If the output folder already exists, it appends `_1`, `_2`, etc. Sound plays once at the very end.
 
 ### Step 1 options
 
@@ -102,7 +124,7 @@ python3 3_extract_terms.py --start 5 --limit 10
 - `2_ocr.py` stops if `ocr.json` already exists and is non-empty.
 - `3_extract_terms.py` **resumes automatically** — it loads `terms_state.json` and skips pages already processed. You can stop it at any time with Ctrl-C and rerun to continue from where you left off.
 - `3_extract_terms.py` records pages where all Gemini models failed in `.metadata.json` under `failed_term_pages`. Run `--rerun-failed` to retry them; successfully recovered pages are removed from the list automatically.
-- All scripts play `done.mp3` 3 times when they finish (macOS `afplay`, no extra dependencies).
+- Individual scripts play `done.mp3` only when `PLAY_SOUND=true` env var is set (default: off). `run_batch.py` always plays sound at the end.
 
 To start a book from scratch, remove or rename its output folder:
 

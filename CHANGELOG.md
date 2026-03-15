@@ -9,7 +9,12 @@ All notable updates in this repository.
 - `3_extract_terms.py`: `--pages 1,5,10` flag to process specific page numbers directly.
 - `3_extract_terms.py`: `--rerun-failed` flag — reads `failed_term_pages` from `.metadata.json` and re-processes those pages; pages that succeed are removed from the list, pages that still fail remain.
 - `3_extract_terms.py`: failed pages (all models exhausted) are now tracked and written to `.metadata.json` under `failed_term_pages` after each run.
-- All scripts (`0_metadata_scrape.py`, `1_scrape_parallel.py`, `2_ocr.py`, `3_extract_terms.py`): play `done.mp3` 3 times via `afplay` upon successful completion.
+- `run_batch.py`: new batch pipeline runner — reads URLs from `.list.json`, runs the full pipeline (0 → 1 → 2 → 3 → rerun-failed) for each book sequentially. Deduplicates output folders by appending `_1`, `_2`, etc. when a folder already exists. Plays `done.mp3` once at the very end.
+- `PLAY_SOUND` env var: all individual scripts now check `PLAY_SOUND` (default: `false`). Set `PLAY_SOUND=true` to enable sound on individual script runs. `run_batch.py` always plays sound at the end regardless.
+
+### Changed
+
+- Sound in `0_metadata_scrape.py`, `1_scrape_parallel.py`, `2_ocr.py`, `3_extract_terms.py` is now gated behind `PLAY_SOUND` env var (default off).
 
 ## 2026-03-14
 

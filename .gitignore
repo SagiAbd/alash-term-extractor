@@ -3,6 +3,7 @@
 
 # Per-book metadata (written by 0_metadata_scrape.py)
 .metadata.json
+.list.json
 
 # Generated data (large / re-creatable)
 output/

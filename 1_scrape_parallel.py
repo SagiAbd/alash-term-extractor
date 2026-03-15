@@ -153,6 +153,7 @@ if __name__ == "__main__":
     main()
     _elapsed = time.time() - _t0
     log.info("Total time: %dm %02ds", int(_elapsed // 60), int(_elapsed % 60))
-    _snd = Path(__file__).parent / "done.mp3"
-    for _ in range(3):
-        os.system(f'afplay "{_snd}"')
+    if os.environ.get("PLAY_SOUND", "").lower() in ("1", "true", "yes"):
+        _snd = Path(__file__).parent / "done.mp3"
+        if _snd.exists():
+            os.system(f'afplay -t 10 "{_snd}"')
