@@ -318,3 +318,6 @@ if __name__ == "__main__":
     main()
     _elapsed = time.time() - _t0
     log.info("Total time: %dm %02ds", int(_elapsed // 60), int(_elapsed % 60))
+    _snd = Path(__file__).parent / "done.mp3"
+    for _ in range(3):
+        os.system(f'afplay "{_snd}"')

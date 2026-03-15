@@ -9,6 +9,7 @@ All notable updates in this repository.
 - `3_extract_terms.py`: `--pages 1,5,10` flag to process specific page numbers directly.
 - `3_extract_terms.py`: `--rerun-failed` flag — reads `failed_term_pages` from `.metadata.json` and re-processes those pages; pages that succeed are removed from the list, pages that still fail remain.
 - `3_extract_terms.py`: failed pages (all models exhausted) are now tracked and written to `.metadata.json` under `failed_term_pages` after each run.
+- All scripts (`0_metadata_scrape.py`, `1_scrape_parallel.py`, `2_ocr.py`, `3_extract_terms.py`): play `done.mp3` 3 times via `afplay` upon successful completion.
 
 ## 2026-03-14
 

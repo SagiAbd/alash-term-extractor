@@ -102,6 +102,7 @@ python3 3_extract_terms.py --start 5 --limit 10
 - `2_ocr.py` stops if `ocr.json` already exists and is non-empty.
 - `3_extract_terms.py` **resumes automatically** — it loads `terms_state.json` and skips pages already processed. You can stop it at any time with Ctrl-C and rerun to continue from where you left off.
 - `3_extract_terms.py` records pages where all Gemini models failed in `.metadata.json` under `failed_term_pages`. Run `--rerun-failed` to retry them; successfully recovered pages are removed from the list automatically.
+- All scripts play `done.mp3` 3 times when they finish (macOS `afplay`, no extra dependencies).
 
 To start a book from scratch, remove or rename its output folder:
 
