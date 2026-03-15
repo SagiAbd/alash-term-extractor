@@ -86,6 +86,12 @@ python3 2_ocr.py --start-page 26 --end-page 29
 # Extract terms for a page range
 python3 3_extract_terms.py --start-page 26 --end-page 29
 
+# Extract terms for specific pages
+python3 3_extract_terms.py --pages 12,47,83
+
+# Re-process pages that failed in the last run (reads failed_term_pages from .metadata.json)
+python3 3_extract_terms.py --rerun-failed
+
 # Index-based test run (0-based index in ocr.json)
 python3 3_extract_terms.py --start 5 --limit 10
 ```
@@ -95,6 +101,7 @@ python3 3_extract_terms.py --start 5 --limit 10
 - `1_scrape.py` stops if the images folder is not empty (prevents mixing runs).
 - `2_ocr.py` stops if `ocr.json` already exists and is non-empty.
 - `3_extract_terms.py` **resumes automatically** — it loads `terms_state.json` and skips pages already processed. You can stop it at any time with Ctrl-C and rerun to continue from where you left off.
+- `3_extract_terms.py` records pages where all Gemini models failed in `.metadata.json` under `failed_term_pages`. Run `--rerun-failed` to retry them; successfully recovered pages are removed from the list automatically.
 
 To start a book from scratch, remove or rename its output folder:
 

@@ -245,7 +245,7 @@ def extract_terms_from_page(
             return enriched_terms
 
     log.error("Page %d: All models exhausted, page will not be marked as processed.", page_num)
-    return None
+    return []  # empty list = API was tried but failed; None = skipped (no text)
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +390,8 @@ def main():
     parser.add_argument("--start", type=int, default=0, help="Start page index (0-based, index-based mode)")
     parser.add_argument("--start-page", "-s", type=int, default=None, help="Start page number (inclusive)")
     parser.add_argument("--end-page", "-e", type=int, default=None, help="End page number (inclusive)")
+    parser.add_argument("--pages", "-p", type=str, default=None, help="Comma-separated page numbers to process, e.g. 1,5,10,15")
+    parser.add_argument("--rerun-failed", action="store_true", help="Re-process pages listed in failed_term_pages in .metadata.json")
     parser.add_argument("--api-key", type=str, default=None, help="Gemini API key (overrides GEMINI_API_KEY env var)")
     args = parser.parse_args()
 
@@ -425,6 +427,30 @@ def main():
         and (args.start != 0 or args.limit is not None)
     ):
         parser.error("Use either --start/--limit (index mode) or --start-page/--end-page (page mode), not both")
+    if args.pages is not None and (args.start_page is not None or args.end_page is not None or args.start != 0 or args.limit is not None):
+        parser.error("--pages cannot be combined with --start, --limit, --start-page, or --end-page")
+    if args.rerun_failed and (args.pages is not None or args.start_page is not None or args.end_page is not None or args.start != 0 or args.limit is not None):
+        parser.error("--rerun-failed cannot be combined with other page selection flags")
+
+    explicit_pages: set[int] | None = None
+    if args.rerun_failed:
+        _meta_file = Path(__file__).parent / ".metadata.json"
+        try:
+            meta = json.loads(_meta_file.read_text(encoding="utf-8")) if _meta_file.exists() else {}
+            failed = meta.get("failed_term_pages", [])
+        except Exception as e:
+            log.error("Could not read .metadata.json: %s", e)
+            failed = []
+        if not failed:
+            log.info("No failed pages found in .metadata.json. Nothing to rerun.")
+            return
+        explicit_pages = set(failed)
+        log.info("Rerunning %d failed page(s) from .metadata.json: %s", len(explicit_pages), sorted(explicit_pages))
+    elif args.pages is not None:
+        try:
+            explicit_pages = {int(p.strip()) for p in args.pages.split(",") if p.strip()}
+        except ValueError:
+            parser.error("--pages must be comma-separated integers, e.g. 1,5,10,15")
 
     configure_genai(args.api_key)
     models = [genai.GenerativeModel(name) for name in [MODEL_NAME] + FALLBACK_MODEL_NAMES]
@@ -446,7 +472,17 @@ def main():
 
     # --- Build index of pages to process ---
     selected_indices: List[int] = []
-    if args.start_page is not None or args.end_page is not None:
+    if explicit_pages is not None:
+        for i, page_data in enumerate(ocr_data):
+            page_num = parse_page_num(page_data)
+            if page_num in explicit_pages:
+                selected_indices.append(i)
+        matched = {parse_page_num(ocr_data[i]) for i in selected_indices}
+        missing = explicit_pages - matched
+        if missing:
+            log.warning("Pages not found in OCR data: %s", sorted(missing))
+        log.info("Processing %d specific page(s): %s", len(selected_indices), sorted(matched))
+    elif args.start_page is not None or args.end_page is not None:
         skipped_invalid = 0
         for i, page_data in enumerate(ocr_data):
             page_num = parse_page_num(page_data)
@@ -502,6 +538,7 @@ def main():
     state_lock = threading.Lock()
     processed_count = 0
     dupes = 0
+    failed_pages: list[int] = []
 
     def process_page(src_idx: int):
         page = ocr_data[src_idx]
@@ -515,21 +552,52 @@ def main():
         for future in as_completed(futures):
             page_num, terms = future.result()
             if terms is None:
-                # No text or all attempts failed — leave unprocessed for retry
+                # Skipped naturally (empty text) — leave unprocessed for retry
                 continue
             with state_lock:
-                all_terms.extend(terms)
-                all_terms.sort(key=lambda t: t.get("Басталатын беті", -1))
-                before_dedup = len(all_terms)
-                all_terms = deduplicate_terms(all_terms)
-                dupes = before_dedup - len(all_terms)
-                if page_num >= 0:
-                    processed_pages.add(page_num)
-                save_state(state_file, all_terms, processed_pages)
-                save_xlsx(all_terms, output_xlsx)
-                processed_count += 1
-                if processed_count % 10 == 0:
-                    log.info("Processed %d new page(s)...", processed_count)
+                if len(terms) == 0 and page_num >= 0:
+                    # API was attempted but all models failed
+                    if page_num not in failed_pages:
+                        failed_pages.append(page_num)
+                    log.warning("Page %d marked as failed (all models exhausted).", page_num)
+                else:
+                    all_terms.extend(terms)
+                    all_terms.sort(key=lambda t: t.get("Басталатын беті", -1))
+                    before_dedup = len(all_terms)
+                    all_terms = deduplicate_terms(all_terms)
+                    dupes = before_dedup - len(all_terms)
+                    if page_num >= 0:
+                        processed_pages.add(page_num)
+                    save_state(state_file, all_terms, processed_pages)
+                    save_xlsx(all_terms, output_xlsx)
+                    processed_count += 1
+                    if processed_count % 10 == 0:
+                        log.info("Processed %d new page(s)...", processed_count)
+
+    _meta_file = Path(__file__).parent / ".metadata.json"
+    if failed_pages or args.rerun_failed:
+        failed_pages.sort()
+        if failed_pages:
+            log.warning("Failed pages (all models exhausted): %s", failed_pages)
+        try:
+            meta = json.loads(_meta_file.read_text(encoding="utf-8")) if _meta_file.exists() else {}
+            if args.rerun_failed:
+                # Remove pages that succeeded this run; keep ones still failing
+                still_failing = set(failed_pages)
+                meta["failed_term_pages"] = sorted(still_failing)
+                if not still_failing:
+                    log.info("All previously failed pages succeeded. Cleared failed_term_pages in .metadata.json.")
+                else:
+                    log.warning("Still failing after rerun: %s", sorted(still_failing))
+            else:
+                existing = set(meta.get("failed_term_pages", []))
+                existing.update(failed_pages)
+                meta["failed_term_pages"] = sorted(existing)
+            _meta_file.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            if failed_pages:
+                log.info("Failed pages written to .metadata.json: %s", meta["failed_term_pages"])
+        except Exception as e:
+            log.error("Could not update .metadata.json with failed pages: %s", e)
 
     if processed_count == 0:
         log.info("No new pages to process.")
