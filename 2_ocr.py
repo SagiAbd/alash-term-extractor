@@ -21,11 +21,10 @@ from typing import List, Dict, Any
 from config import (
     OUTPUT_BASE_DIR,
     OCR_MODEL_NAME as MODEL_NAME,
+    OCR_FALLBACK_MODELS,
     PARALLEL_REQUESTS,
     book_dir_name,
 )
-
-OCR_FALLBACK_MODEL_NAME = "gemini-2.5-flash"
 
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
@@ -159,11 +158,13 @@ def _call_model(image_path: Path, model) -> str:
     return response.text
 
 
-def perform_ocr(image_path: Path, primary_model, fallback_model) -> str:
-    """Send image to Gemini API for OCR with retries and fallback model."""
+def perform_ocr(image_path: Path, models: list) -> str:
+    """Send image to Gemini API for OCR, trying each model in order on failure."""
     log.info("Processing %s...", image_path.name)
+    model_names = [MODEL_NAME] + OCR_FALLBACK_MODELS
 
-    def try_with_model(model, model_name: str, attempts: int) -> str | None:
+    for model, model_name in zip(models, model_names):
+        attempts = 2 if model is models[0] else 1
         for attempt in range(1, attempts + 1):
             try:
                 return _call_model(image_path, model)
@@ -180,18 +181,9 @@ def perform_ocr(image_path: Path, primary_model, fallback_model) -> str:
                         time.sleep(wait)
                     else:
                         time.sleep(5)
-        return None
+        log.warning("%s failed for %s, trying next model...", model_name, image_path.name)
 
-    result = try_with_model(primary_model, MODEL_NAME, attempts=2)
-    if result is not None:
-        return result
-
-    log.warning("Primary model failed for %s, trying fallback model %s...", image_path.name, OCR_FALLBACK_MODEL_NAME)
-    result = try_with_model(fallback_model, OCR_FALLBACK_MODEL_NAME, attempts=1)
-    if result is not None:
-        return result
-
-    log.error("All attempts failed for %s, skipping.", image_path.name)
+    log.error("All models failed for %s, skipping.", image_path.name)
     return ""
 
 
@@ -251,8 +243,7 @@ def main():
         log.error(e)
         return
 
-    model = genai.GenerativeModel(MODEL_NAME)
-    fallback_model = genai.GenerativeModel(OCR_FALLBACK_MODEL_NAME)
+    models = [genai.GenerativeModel(MODEL_NAME)] + [genai.GenerativeModel(m) for m in OCR_FALLBACK_MODELS]
 
     images = get_sorted_images(args.input_dir)
     if not images:
@@ -294,7 +285,7 @@ def main():
     args.output_file.parent.mkdir(parents=True, exist_ok=True)
 
     def process_image(img_path: Path):
-        text = perform_ocr(img_path, model, fallback_model)
+        text = perform_ocr(img_path, models)
         if not text:
             log.warning("Skipping %s — no text extracted.", img_path.name)
             return

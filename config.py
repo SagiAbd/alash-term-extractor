@@ -42,20 +42,21 @@ SCRAPER_MAX_RETRIES = 3              # download retry attempts per image
 # 2_ocr.py — Gemini OCR
 # ---------------------------------------------------------------------------
 OCR_MODEL_NAME = "gemini-2.5-flash"
+OCR_FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-2.5-pro"]
 
 # ---------------------------------------------------------------------------
 # 3_extract_terms.py — Term extraction
 # ---------------------------------------------------------------------------
 TERMS_OVERLAP_CHARS = 150            # characters from adjacent pages included as context
 TERMS_MODEL_NAME = "gemini-2.5-flash"
-TERMS_FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash"]
+TERMS_FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-2.5-pro"]
 PARALLEL_REQUESTS = 90             # concurrent API requests (OCR and term extraction)
 
 # Metadata written into every extracted term row (sourced from .metadata.json)
-CONST_YEAR   = _meta.get("year")   or 2013
-CONST_LINK   = (_meta.get("link")  or "https://kazneb.kz/la/bookView/view?brId=1151021&simple=true").rstrip("#") + "#"
-CONST_AUTHOR = _meta.get("author") or "Жұмабаев, Мағжан"
-CONST_TITLE  = _meta.get("title")  or "Шығармалары"
+CONST_YEAR   = _meta.get("year")
+CONST_LINK   = _meta.get("link")
+CONST_AUTHOR = _meta.get("author")
+CONST_TITLE  = _meta.get("title")
 
 
 # ---------------------------------------------------------------------------
