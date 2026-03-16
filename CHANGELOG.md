@@ -2,6 +2,13 @@
 
 All notable updates in this repository.
 
+## 2026-03-16
+
+### Changed
+
+- `1_scrape.py`: removed fail-fast non-empty directory guard; replaced with resume logic — already-downloaded pages are detected and skipped automatically.
+- `1_scrape_parallel.py`: added crash recovery — leftover `_tmp_scrape/` files from a previous interrupted run are merged into the output directory on startup; already-downloaded pages are detected and excluded from the new run; workers now write directly to the final output directory (temp dirs removed); exits immediately if all pages are already present.
+
 ## 2026-03-15
 
 ### Added

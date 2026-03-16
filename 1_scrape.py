@@ -221,13 +221,10 @@ def scrape_pages(
     """
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    if any(out_path.iterdir()):
-        log.error(
-            "Output directory is not empty: %s\n"
-            "Stop to prevent overriding/mixing old files. Please back up or clear this folder, then rerun.",
-            out_path.resolve(),
-        )
-        return
+
+    existing = {int(f.stem) for f in out_path.glob("*.png") if f.stem.isdigit()}
+    if existing:
+        log.info("Resuming: %d pages already downloaded in %s", len(existing), out_path.resolve())
 
     log.info("Starting scraper...")
     driver = create_driver(headless=headless)
