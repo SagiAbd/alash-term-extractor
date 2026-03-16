@@ -104,6 +104,19 @@ def load_ocr_results(filepath: Path) -> List[Dict[str, Any]]:
         log.error("Error decoding JSON file: %s", e)
         return []
 
+_LATEX_BLOCK = re.compile(r"\$\$.*?\$\$", re.DOTALL)
+_LATEX_INLINE = re.compile(r"\$[^$\n]+?\$")
+_LATEX_CMD = re.compile(r"\\[a-zA-Z]+\{[^}]*\}|\\[a-zA-Z]+")
+
+
+def _strip_latex(text: str) -> str:
+    """Remove LaTeX math blocks and commands from text, collapse excess whitespace."""
+    text = _LATEX_BLOCK.sub(" ", text)
+    text = _LATEX_INLINE.sub(" ", text)
+    text = _LATEX_CMD.sub(" ", text)
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
+
+
 def create_extraction_prompt(text: str, prev_tail: str = "", next_head: str = "") -> str:
     """Create the prompt for term extraction."""
     context_block = ""
@@ -173,6 +186,14 @@ def extract_terms_from_page(
 
     if not text.strip():
         log.warning("Page %d has no text, skipping.", page_num)
+        return None
+
+    text = _strip_latex(text)
+    prev_text = _strip_latex(prev_text)
+    next_text = _strip_latex(next_text)
+
+    if not text.strip():
+        log.info("Page %d: only LaTeX content after stripping, skipping.", page_num)
         return None
 
     prev_tail = prev_text[-OVERLAP_CHARS:] if prev_text else ""

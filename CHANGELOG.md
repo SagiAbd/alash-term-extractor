@@ -2,6 +2,12 @@
 
 All notable updates in this repository.
 
+## 2026-03-17
+
+### Changed
+
+- `3_extract_terms.py`: strip LaTeX (`$$...$$`, `$...$`, `\cmd{...}`) from page text before sending to the model; pages that contain only LaTeX after stripping are skipped entirely.
+
 ## 2026-03-16 (3)
 
 ### Fixed
