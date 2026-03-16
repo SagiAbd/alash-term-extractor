@@ -3,8 +3,8 @@
 Parallel wrapper for 1_scrape.py
 
 Splits total pages into N chunks and runs N instances of 1_scrape.py
-simultaneously, each writing to a temp subdirectory.
-After all workers finish, merges all images into the final output directory.
+simultaneously, all writing directly to the final output directory.
+Supports resume: already-downloaded pages are skipped automatically.
 
 Usage:
     python3 1_scrape_parallel.py

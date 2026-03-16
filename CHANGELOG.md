@@ -2,6 +2,12 @@
 
 All notable updates in this repository.
 
+## 2026-03-16 (2)
+
+### Changed
+
+- `run_batch.py`: `.list.json` now accepts objects with optional `start_page` and `end_page` fields alongside plain URL strings; if set, the values are passed as `--start-page` / `--end-page` to `3_extract_terms.py`. Plain strings and omitted fields default to the full page range.
+
 ## 2026-03-16
 
 ### Changed

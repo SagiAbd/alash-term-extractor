@@ -39,11 +39,18 @@ DEFAULT_LIST = ROOT / ".list.json"
 OUTPUT_BASE = ROOT / "output"
 
 
-def load_urls(list_path: Path) -> list[str]:
+def load_entries(list_path: Path) -> list[dict]:
+    """Load .list.json — supports plain URL strings or objects with optional start_page/end_page."""
     data = json.loads(list_path.read_text(encoding="utf-8"))
     if not isinstance(data, list):
-        raise ValueError(f"{list_path} must contain a JSON array of URL strings")
-    return [u.rstrip("#") for u in data if u.strip()]
+        raise ValueError(f"{list_path} must contain a JSON array")
+    entries = []
+    for item in data:
+        if isinstance(item, str) and item.strip():
+            entries.append({"url": item.rstrip("#")})
+        elif isinstance(item, dict) and item.get("url", "").strip():
+            entries.append({**item, "url": item["url"].rstrip("#")})
+    return entries
 
 
 def book_dir_name_from_meta() -> str:
@@ -91,10 +98,16 @@ def run_step(script: str, args: list[str] | None = None):
         raise RuntimeError(f"{script} exited with code {result.returncode}")
 
 
-def process_one(url: str, workers: int):
-    """Run the full pipeline for a single URL."""
+def process_one(entry: dict, workers: int):
+    """Run the full pipeline for a single entry."""
+    url = entry["url"]
+    start_page = entry.get("start_page")
+    end_page = entry.get("end_page")
+
     log.info("=" * 60)
     log.info("STARTING: %s", url)
+    if start_page or end_page:
+        log.info("Extraction page range: %s–%s", start_page or "start", end_page or "end")
     log.info("=" * 60)
 
     # Step 0 — metadata
@@ -104,7 +117,6 @@ def process_one(url: str, workers: int):
     base_name = book_dir_name_from_meta()
     if (OUTPUT_BASE / base_name).exists():
         deduped = deduplicate_folder(base_name)
-        # Figure out what suffix was added (e.g. "_1") and append to title
         suffix_part = deduped[len(base_name):]  # e.g. "_1"
         patch_metadata_title(suffix_part)
         log.info("Output folder exists — using deduplicated name: %s", deduped)
@@ -116,7 +128,12 @@ def process_one(url: str, workers: int):
     run_step("2_ocr.py")
 
     # Step 3 — extract terms
-    run_step("3_extract_terms.py")
+    extract_args = []
+    if start_page is not None:
+        extract_args += ["--start-page", str(start_page)]
+    if end_page is not None:
+        extract_args += ["--end-page", str(end_page)]
+    run_step("3_extract_terms.py", extract_args or None)
 
     # Rerun failed pages
     log.info("Rerunning failed pages (if any)...")
@@ -140,20 +157,20 @@ def main():
     )
     args = parser.parse_args()
 
-    urls = load_urls(Path(args.list))
-    log.info("Loaded %d URLs from %s", len(urls), args.list)
+    entries = load_entries(Path(args.list))
+    log.info("Loaded %d entries from %s", len(entries), args.list)
 
     failed = []
-    for i, url in enumerate(urls, 1):
-        log.info(">>> Book %d / %d", i, len(urls))
+    for i, entry in enumerate(entries, 1):
+        log.info(">>> Book %d / %d", i, len(entries))
         try:
-            process_one(url, args.workers)
+            process_one(entry, args.workers)
         except Exception as e:
-            log.error("FAILED on %s: %s", url, e)
-            failed.append(url)
+            log.error("FAILED on %s: %s", entry["url"], e)
+            failed.append(entry["url"])
 
     log.info("=" * 60)
-    log.info("BATCH COMPLETE: %d/%d succeeded", len(urls) - len(failed), len(urls))
+    log.info("BATCH COMPLETE: %d/%d succeeded", len(entries) - len(failed), len(entries))
     if failed:
         log.warning("Failed URLs:")
         for u in failed:
