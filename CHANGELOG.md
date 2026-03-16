@@ -2,6 +2,16 @@
 
 All notable updates in this repository.
 
+## 2026-03-17 (2)
+
+### Fixed
+
+- `run_batch.py`: `failed_term_pages` from `.metadata.json` are now saved into the corresponding `.list.json` entry after each book, before `.metadata.json` is overwritten by the next book's metadata step. Pipeline errors are also written as an `error` field per entry (cleared on success). Both are flushed to `.list.json` after every book, including on failure.
+
+### Added
+
+- `2_ocr.py`, `3_extract_terms.py`: OpenAI model fallback support — model names starting with `gpt-` are routed through the OpenAI API (`OPENAI_API_KEY` env var); falls back gracefully if key is missing or `openai` package is not installed. Fallback chain is configured via `OCR_FALLBACK_MODELS` / `TERMS_FALLBACK_MODELS` in `config.py`.
+
 ## 2026-03-17
 
 ### Changed

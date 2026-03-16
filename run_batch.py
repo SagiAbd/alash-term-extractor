@@ -98,6 +98,24 @@ def run_step(script: str, args: list[str] | None = None):
         raise RuntimeError(f"{script} exited with code {result.returncode}")
 
 
+def flush_failed_pages(entry: dict):
+    """Read failed_term_pages from .metadata.json and save into the list entry before it gets overwritten."""
+    try:
+        meta = json.loads(METADATA_PATH.read_text(encoding="utf-8"))
+        failed = meta.get("failed_term_pages", [])
+        if failed:
+            entry["failed_term_pages"] = sorted(failed)
+            log.warning("Saved %d failed term page(s) to list entry: %s", len(failed), failed)
+        else:
+            entry.pop("failed_term_pages", None)
+    except Exception as e:
+        log.warning("Could not read failed_term_pages from .metadata.json: %s", e)
+
+
+def save_list(list_path: Path, entries: list[dict]):
+    list_path.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def process_one(entry: dict, workers: int):
     """Run the full pipeline for a single entry."""
     url = entry["url"]
@@ -157,7 +175,8 @@ def main():
     )
     args = parser.parse_args()
 
-    entries = load_entries(Path(args.list))
+    list_path = Path(args.list)
+    entries = load_entries(list_path)
     log.info("Loaded %d entries from %s", len(entries), args.list)
 
     failed = []
@@ -165,9 +184,14 @@ def main():
         log.info(">>> Book %d / %d", i, len(entries))
         try:
             process_one(entry, args.workers)
+            entry.pop("error", None)
         except Exception as e:
             log.error("FAILED on %s: %s", entry["url"], e)
             failed.append(entry["url"])
+            entry["error"] = str(e)
+        finally:
+            flush_failed_pages(entry)
+            save_list(list_path, entries)
 
     log.info("=" * 60)
     log.info("BATCH COMPLETE: %d/%d succeeded", len(entries) - len(failed), len(entries))

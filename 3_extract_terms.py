@@ -22,6 +22,37 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
+try:
+    import openai as _openai_lib
+except ImportError:
+    _openai_lib = None
+
+_openai_client = None
+
+
+class _OpenAIModel:
+    """Wraps an OpenAI model to look like a Gemini GenerativeModel for term extraction."""
+    def __init__(self, model_name: str, client):
+        self.model_name = model_name
+        self._client = client
+
+    def generate_content(self, prompt: str, generation_config=None, safety_settings=None):
+        response = self._client.chat.completions.create(
+            model=self.model_name,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+        )
+        text = response.choices[0].message.content
+        return type("_R", (), {"text": text})()
+
+
+def _build_terms_model(name: str):
+    if name.startswith("gpt-"):
+        if _openai_client is None:
+            log.warning("Skipping OpenAI model '%s' — OPENAI_API_KEY not set or openai not installed.", name)
+            return None
+        return _OpenAIModel(name, _openai_client)
+    return genai.GenerativeModel(name)
 from config import (
     OUTPUT_BASE_DIR,
     TERMS_OVERLAP_CHARS as OVERLAP_CHARS,
@@ -81,6 +112,19 @@ def configure_genai(api_key: str | None = None):
     if not key:
         raise ValueError("API key required: pass --api-key or set GEMINI_API_KEY in .env")
     genai.configure(api_key=key)
+
+
+def configure_openai():
+    global _openai_client
+    if _openai_lib is None:
+        log.warning("openai package not installed — OpenAI fallback models will be skipped.")
+        return
+    key = os.getenv("OPENAI_API_KEY")
+    if not key:
+        log.warning("OPENAI_API_KEY not set — OpenAI fallback models will be skipped.")
+        return
+    _openai_client = _openai_lib.OpenAI(api_key=key)
+    log.info("OpenAI client configured.")
 
 
 def parse_page_num(page_data: Dict[str, Any]) -> int:
@@ -482,8 +526,9 @@ def main():
             parser.error("--pages must be comma-separated integers, e.g. 1,5,10,15")
 
     configure_genai(args.api_key)
-    models = [genai.GenerativeModel(name) for name in [MODEL_NAME] + FALLBACK_MODEL_NAMES]
-    log.info("Model chain: %s", " → ".join([MODEL_NAME] + FALLBACK_MODEL_NAMES))
+    configure_openai()
+    models = [m for m in (_build_terms_model(n) for n in [MODEL_NAME] + FALLBACK_MODEL_NAMES) if m is not None]
+    log.info("Model chain: %s", " → ".join(m.model_name for m in models))
 
     ocr_data = load_ocr_results(input_file)
     if not ocr_data:

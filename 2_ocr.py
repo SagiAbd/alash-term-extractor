@@ -26,8 +26,45 @@ from config import (
     book_dir_name,
 )
 
+import base64
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
+try:
+    import openai as _openai_lib
+except ImportError:
+    _openai_lib = None
+
+_openai_client = None
+
+
+class _OpenAIModel:
+    """Wraps an OpenAI model to look like a Gemini GenerativeModel for OCR."""
+    def __init__(self, model_name: str, client):
+        self.model_name = model_name
+        self._client = client
+
+    def generate_content(self, content_list, safety_settings=None):
+        prompt_text = content_list[0]
+        image_bytes = content_list[1]["data"]
+        b64 = base64.b64encode(image_bytes).decode()
+        response = self._client.chat.completions.create(
+            model=self.model_name,
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": prompt_text},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+            ]}],
+        )
+        text = response.choices[0].message.content
+        return type("_R", (), {"text": text})()
+
+
+def _build_ocr_model(name: str):
+    if name.startswith("gpt-"):
+        if _openai_client is None:
+            log.warning("Skipping OpenAI model '%s' — OPENAI_API_KEY not set or openai not installed.", name)
+            return None
+        return _OpenAIModel(name, _openai_client)
+    return genai.GenerativeModel(name)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -72,6 +109,19 @@ def configure_genai(api_key: str | None = None):
     if not key:
         raise ValueError("API key required: pass --api-key or set GEMINI_API_KEY in .env")
     genai.configure(api_key=key)
+
+
+def configure_openai():
+    global _openai_client
+    if _openai_lib is None:
+        log.warning("openai package not installed — OpenAI fallback models will be skipped.")
+        return
+    key = os.getenv("OPENAI_API_KEY")
+    if not key:
+        log.warning("OPENAI_API_KEY not set — OpenAI fallback models will be skipped.")
+        return
+    _openai_client = _openai_lib.OpenAI(api_key=key)
+    log.info("OpenAI client configured.")
 
 
 def get_sorted_images(input_dir: Path) -> List[Path]:
@@ -159,12 +209,12 @@ def _call_model(image_path: Path, model) -> str:
 
 
 def perform_ocr(image_path: Path, models: list) -> str:
-    """Send image to Gemini API for OCR, trying each model in order on failure."""
+    """Send image to Gemini/OpenAI for OCR, trying each model in order on failure."""
     log.info("Processing %s...", image_path.name)
-    model_names = [MODEL_NAME] + OCR_FALLBACK_MODELS
 
-    for model, model_name in zip(models, model_names):
-        attempts = 2 if model is models[0] else 1
+    for i, model in enumerate(models):
+        model_name = model.model_name
+        attempts = 2 if i == 0 else 1
         for attempt in range(1, attempts + 1):
             try:
                 return _call_model(image_path, model)
@@ -243,7 +293,9 @@ def main():
         log.error(e)
         return
 
-    models = [genai.GenerativeModel(MODEL_NAME)] + [genai.GenerativeModel(m) for m in OCR_FALLBACK_MODELS]
+    configure_openai()
+    models = [m for m in (_build_ocr_model(n) for n in [MODEL_NAME] + OCR_FALLBACK_MODELS) if m is not None]
+    log.info("OCR model chain: %s", " → ".join(m.model_name for m in models))
 
     images = get_sorted_images(args.input_dir)
     if not images:

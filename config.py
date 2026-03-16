@@ -42,14 +42,14 @@ SCRAPER_MAX_RETRIES = 3              # download retry attempts per image
 # 2_ocr.py — Gemini OCR
 # ---------------------------------------------------------------------------
 OCR_MODEL_NAME = "gemini-2.5-flash"
-OCR_FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-2.5-pro"]
+OCR_FALLBACK_MODELS = ["gpt-4o-mini-2024-07-18", "gemini-2.0-flash"]
 
 # ---------------------------------------------------------------------------
 # 3_extract_terms.py — Term extraction
 # ---------------------------------------------------------------------------
 TERMS_OVERLAP_CHARS = 150            # characters from adjacent pages included as context
 TERMS_MODEL_NAME = "gemini-2.5-flash"
-TERMS_FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-2.5-pro"]
+TERMS_FALLBACK_MODELS = ["gpt-4o-mini-2024-07-18", "gemini-2.0-flash"]
 PARALLEL_REQUESTS = 90             # concurrent API requests (OCR and term extraction)
 
 # Metadata written into every extracted term row (sourced from .metadata.json)
