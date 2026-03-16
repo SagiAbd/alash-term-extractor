@@ -10,6 +10,7 @@ can stop at any time and resume where you left off.
 import json
 import logging
 import os
+import re
 import time
 import argparse
 import threading
@@ -355,9 +356,16 @@ def _save_with_metadata_header(df: pd.DataFrame, output_path: Path):
         hc.font = header_font
 
     # --- Data rows ---
+    _illegal = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+    def _clean(v):
+        if isinstance(v, str):
+            return _illegal.sub("", v)
+        return v
+
     for r_idx, row in enumerate(df.itertuples(index=False), start=header_row + 1):
         for c_idx, value in enumerate(row, start=1):
-            ws.cell(row=r_idx, column=c_idx, value=value)
+            ws.cell(row=r_idx, column=c_idx, value=_clean(value))
 
     wb.save(str(output_path))
 

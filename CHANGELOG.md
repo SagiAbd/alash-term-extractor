@@ -2,6 +2,12 @@
 
 All notable updates in this repository.
 
+## 2026-03-16 (3)
+
+### Fixed
+
+- `3_extract_terms.py`: strip illegal control characters (`\x00–\x08`, `\x0b`, `\x0c`, `\x0e–\x1f`) from cell values before writing to xlsx — prevents `IllegalCharacterError` crash when extracted text contains LaTeX or other embedded control characters.
+
 ## 2026-03-16 (2)
 
 ### Changed
