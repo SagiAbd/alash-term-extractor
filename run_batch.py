@@ -2,8 +2,12 @@
 """
 run_batch.py — Sequential batch pipeline runner.
 
-Reads a list of kazneb.kz URLs from .list.json and runs the full pipeline
+Reads a list of book URLs from .list.json and runs the full pipeline
 (0 → 1 → 2 → 3 → rerun-failed) for each book in sequence.
+
+Supports multiple sources:
+  - kazneb.kz    → Selenium-based page scraping
+  - adebiportal.kz → PDF download + page-to-image conversion
 
 If the output folder for a book already exists, the folder name in
 .metadata.json is suffixed with _1, _2, etc. to avoid collisions.
@@ -116,20 +120,30 @@ def save_list(list_path: Path, entries: list[dict]):
     list_path.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _detect_source(url: str) -> str:
+    """Return 'kazneb', 'adebiportal', or 'unknown' based on the URL domain."""
+    from config import source_type
+    return source_type(url)
+
+
 def process_one(entry: dict, workers: int):
     """Run the full pipeline for a single entry."""
     url = entry["url"]
     start_page = entry.get("start_page")
     end_page = entry.get("end_page")
+    src = _detect_source(url)
 
     log.info("=" * 60)
-    log.info("STARTING: %s", url)
+    log.info("STARTING [%s]: %s", src, url)
     if start_page or end_page:
         log.info("Extraction page range: %s–%s", start_page or "start", end_page or "end")
     log.info("=" * 60)
 
     # Step 0 — metadata
-    run_step("0_metadata_scrape.py", ["--url", url])
+    if src == "adebiportal":
+        run_step("0_metadata_scrape_adebiportal.py", ["--url", url])
+    else:
+        run_step("0_metadata_scrape.py", ["--url", url])
 
     # Check for folder collision and deduplicate
     base_name = book_dir_name_from_meta()
@@ -139,8 +153,11 @@ def process_one(entry: dict, workers: int):
         patch_metadata_title(suffix_part)
         log.info("Output folder exists — using deduplicated name: %s", deduped)
 
-    # Step 1 — scrape
-    run_step("1_scrape_parallel.py", ["--workers", str(workers)])
+    # Step 1 — scrape / convert pages to images
+    if src == "adebiportal":
+        run_step("1_scrape_adebiportal.py", ["--url", url])
+    else:
+        run_step("1_scrape_parallel.py", ["--workers", str(workers)])
 
     # Step 2 — OCR
     run_step("2_ocr.py")

@@ -2,6 +2,17 @@
 
 All notable updates in this repository.
 
+## 2026-03-17 (3)
+
+### Added
+
+- **adebiportal.kz support**: new source type alongside kazneb.kz — the pipeline now handles PDF-based books from adebiportal.kz.
+  - `0_metadata_scrape_adebiportal.py`: downloads the PDF, renders the first pages with PyMuPDF, sends them to Gemini for title/author/year extraction, writes `.metadata.json`.
+  - `1_scrape_adebiportal.py`: downloads the PDF (saved as `output/<book>/book.pdf`), converts each page to PNG at 200 DPI via PyMuPDF. Supports `--start-page`/`--end-page` and resume (skips existing images).
+- `config.py`: added `source_type(url)` (returns `"kazneb"` / `"adebiportal"` / `"unknown"`) and `pdf_url_from_adebiportal(url)` helper.
+- `run_batch.py`: auto-detects source from URL and dispatches to the correct metadata + scrape scripts per source type.
+- `requirements.txt`: added `pymupdf>=1.24.0`.
+
 ## 2026-03-17 (2)
 
 ### Fixed

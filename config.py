@@ -42,14 +42,14 @@ SCRAPER_MAX_RETRIES = 3              # download retry attempts per image
 # 2_ocr.py — Gemini OCR
 # ---------------------------------------------------------------------------
 OCR_MODEL_NAME = "gemini-2.5-flash"
-OCR_FALLBACK_MODELS = ["gpt-4o-mini-2024-07-18", "gemini-2.0-flash"]
+OCR_FALLBACK_MODELS = ["gemini-2.0-flash"]
 
 # ---------------------------------------------------------------------------
 # 3_extract_terms.py — Term extraction
 # ---------------------------------------------------------------------------
 TERMS_OVERLAP_CHARS = 150            # characters from adjacent pages included as context
 TERMS_MODEL_NAME = "gemini-2.5-flash"
-TERMS_FALLBACK_MODELS = ["gpt-4o-mini-2024-07-18", "gemini-2.0-flash"]
+TERMS_FALLBACK_MODELS = ["gemini-2.0-flash"]
 PARALLEL_REQUESTS = 90             # concurrent API requests (OCR and term extraction)
 
 # Metadata written into every extracted term row (sourced from .metadata.json)
@@ -95,3 +95,25 @@ def book_id_from_url(url: str) -> str:
     except Exception:
         pass
     return "unknown"
+
+
+def source_type(url: str) -> str:
+    """Return the source site identifier based on URL domain."""
+    from urllib.parse import urlparse
+    host = urlparse(url).hostname or ""
+    if "kazneb.kz" in host:
+        return "kazneb"
+    if "adebiportal.kz" in host:
+        return "adebiportal"
+    return "unknown"
+
+
+def pdf_url_from_adebiportal(url: str) -> str:
+    """Extract the direct PDF download URL from an adebiportal.kz viewer URL."""
+    from urllib.parse import urlparse, parse_qs, unquote
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    file_path = qs.get("file", [""])[0]
+    if file_path:
+        return f"https://{parsed.hostname}{unquote(file_path)}"
+    return ""
